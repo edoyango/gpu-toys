@@ -41,8 +41,8 @@ program test
       enddo
     enddo
 #else ! k inside
-    do concurrent(i=1:n(1), i=1:n(2))
-      do k = 1, nz
+    do concurrent(i=1:n(1), j=1:n(2))
+      do k = 1, n(3)
         b(i, j) = b(i, j) + a(i, j, k)
       enddo
     enddo
