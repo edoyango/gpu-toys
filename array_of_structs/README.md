@@ -8,6 +8,15 @@ MOM6 tracer advection uses array of structs with array members and I was noticin
 
 It turns out you have to make sure you transfer both the array of structs and the arras that are members of the structs.
 
+```fortran
+! transfer array of structs
+!$omp target enter data map(to: arr_of_structs(:))
+! loop through each struct to trasnfer member array
+!$ do m = ...
+    !$omp target enter data map(to: arr_of_structs(m)%member_arr(:,:,:))
+!$ enddo
+```
+
 ## nsys output
 
 Each of the loops are wrapped in `nvtx` markers to highlight the differences. The times exclude any data transfer time
@@ -23,6 +32,13 @@ The best case is the `kjmi flat` loop, and the worst case is the `kmji` loop - t
 happens in MOM6 tracer advection. Having a flatter loop is clearly beneficial.
 
 ## without proper data mapping
+
+By "without proper data mapping", I mean transfering only the array of structs without transferring the members e.g.
+```fortran
+! transfer array of structs
+!$omp target enter data map(to: arr_of_structs(:))
+! no extra loop for transferring arrays within structs.
+```
 
 Considering purely CUDA kernel time: 
 ```
