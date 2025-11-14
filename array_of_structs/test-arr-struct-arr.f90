@@ -77,9 +77,9 @@ contains
 
     double precision function mysum(arr)
         type(mystruct):: arr(:)
-
         mysum = 0.d0
         do m=1,n
+            !$omp target exit data map(from: arr_of_structs(m)%a)
             do k=1,nz
                 do j = 1,ny
                     do i = 1,nx
@@ -88,10 +88,12 @@ contains
                 enddo
             enddo
         enddo
+        !$omp target exit data map(release: arr_of_structs(:))
     end function mysum
 
     subroutine init()
 
+        !$omp target enter data map(to: arr_of_structs(:))
         do m = 1,n
             do k = 1,nz
                 do j = 1, ny
@@ -100,6 +102,7 @@ contains
                     enddo
                 enddo
             enddo
+            !$omp target enter data map(to: arr_of_structs(m)%a)
         enddo
 
     end subroutine init
