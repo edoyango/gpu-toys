@@ -348,21 +348,23 @@ contains
 end module hor_visc_m
 
 program test_horizontal_viscosity
-    use iso_fortran_env, only: int64
+    use iso_fortran_env, only: int64, real64
     use prec_m
     use grid_m
     use vertical_grid_m
     use hor_visc_m
+    use omp_lib
     implicit none
 
     type(ocean_grid_type) :: G
     type(verticalGrid_type) :: GV
     type(hor_visc_CS) :: CS
+    real(real64) :: t1, t2
     real(fp), allocatable :: u(:,:,:), v(:,:,:), h(:,:,:)
     real(fp), allocatable :: diffu(:,:,:), diffv(:,:,:)
     integer :: i, j, k, ni, nj, nk, niter
     integer(int64) :: start_time, end_time, count_rate
-    real(fp) :: elapsed_time
+    real(real64) :: elapsed_time
     integer(chcksum_ip) :: checksum_u, checksum_v
     real(fp), parameter :: pi = 4.0_fp * atan(1.0_fp)
     character(len=32) :: arg
@@ -389,6 +391,7 @@ program test_horizontal_viscosity
     read(arg, *) nk
 
     ! Initialize grid structure
+    t1 = omp_get_wtime()
     call initialize_grid(G, ni, nj)
     
     ! Initialize vertical grid
@@ -396,6 +399,9 @@ program test_horizontal_viscosity
     
     ! Initialize horizontal viscosity control structure
     call initialize_hor_visc_cs(CS, G, GV)
+
+    t2 = omp_get_wtime()
+    print *, "Time (s) ", t2 - t1
     
     ! Allocate velocity and thickness arrays
     allocate(u(G%IsdB:G%IedB, G%jsd:G%jed, GV%ke))
@@ -403,9 +409,14 @@ program test_horizontal_viscosity
     allocate(h(G%isd:G%ied, G%jsd:G%jed, GV%ke))
     allocate(diffu(G%IsdB:G%IedB, G%jsd:G%jed, GV%ke))
     allocate(diffv(G%isd:G%ied, G%JsdB:G%JedB, GV%ke))
-    
+
+    !$omp target enter data map(alloc: u,v,h,diffu,diffv) 
+
     ! Initialize with non-uniform values
+    t1 = omp_get_wtime()
     call initialize_velocity_and_thickness(u, v, h, G, GV, pi)
+    t2 = omp_get_wtime()
+    print *, "Time init (s) ", t2 - t1
     
     print *, "Grid dimensions: ni=", ni, "nj=", nj, "nk=", nk
     print *, "Running horizontal_viscosity subroutine..."
@@ -413,7 +424,7 @@ program test_horizontal_viscosity
     !$omp target enter data map(alloc: diffu, diffv)
     
     ! Time the subroutine
-    call system_clock(start_time, count_rate)
+    t1 = omp_get_wtime()
 
     do niter = 1, 10
     
@@ -421,9 +432,9 @@ program test_horizontal_viscosity
 
     enddo
     
-    call system_clock(end_time)
+    t2 = omp_get_wtime()
+    elapsed_time = t2 - t1
     
-    elapsed_time = real(end_time - start_time, fp) / real(count_rate, fp)
     
     ! Calculate checksums
     checksum_u = calculate_checksum(diffu)
@@ -610,41 +621,35 @@ contains
         nj = real(G%jed - G%jsd, fp)
 
         ! Initialize u velocity with vortex-like pattern
-        do k = 1, GV%ke
-            z = real(k, fp) / real(GV%ke, fp)
-            do j = G%jsd, G%jed
-                do i = G%IsdB, G%IedB
+        do concurrent(k=1:GV%ke)
+          z = real(k,fp) / real(GV%ke,fp)
+          do concurrent(j=G%jsd:G%jed, i=G%isdb:G%iedb)
                     x = real(i, fp) / ni
                     y = real(j, fp) / nj
                     u(i,j,k) = 0.1_fp * sin(2.0_fp * pi * x) * cos(2.0_fp * pi * y) * (1.0_fp - z)
-                enddo
-            enddo
+          enddo
         enddo
 
         ! Initialize v velocity with complementary pattern
-        do k = 1, GV%ke
-            z = real(k, fp) / real(GV%ke, fp)
-            do j = G%JsdB, G%JedB
-                do i = G%isd, G%ied
+        do concurrent(k=1:GV%ke)
+          z = real(k,fp) / real(GV%ke,fp)
+            do concurrent (j=G%jsdb:G%jedb, i=G%isd:G%ied)
                     x = real(i, fp) / ni
                     y = real(j, fp) / nj
                     v(i,j,k) = -0.1_fp * cos(2.0_fp * pi * x) * sin(2.0_fp * pi * y) * (1.0_fp - z)
-                enddo
             enddo
         enddo
 
         ! Initialize thickness with vertical and horizontal variation
-        do k = 1, GV%ke
-            z = real(k, fp) / real(GV%ke, fp)
-            do j = G%jsd, G%jed
-                do i = G%isd, G%ied
+        do concurrent(k=1:GV%ke)
+          z = real(k,fp) / real(GV%ke,fp)
+          do concurrent (j=G%jsd:G%jed, i=G%isd:G%ied)
                     x = real(i, fp) / ni
                     y = real(j, fp) / nj
                     h(i,j,k) = 10.0_fp + 5.0_fp * (1.0_fp - z) * (1.0_fp + 0.3_fp * sin(pi * x) * cos(pi * y))
-                enddo
             enddo
         enddo
-        !$omp target enter data map(to: u, v, h)
+        !!$omp target enter data map(to: u, v, h)
     end subroutine initialize_velocity_and_thickness
 
     function calculate_checksum(array) result(checksum)
