@@ -1,0 +1,50 @@
+# Makefile for av_rem_test.F90
+#
+# Targets:
+#   gpu       – AMD GPU build: OMP target offload + do concurrent GPU offload
+#   cpu       – host-only build (OMP enabled but no device code)
+#   run_gpu   – build and run the GPU binary
+#   run_cpu   – build and run the CPU binary
+#   clean     – remove built binaries
+#
+# Customise as needed:
+#   make gpu GPU_ARCH=gfx942   # MI300X
+#   make gpu GPU_ARCH=gfx908   # MI100
+#
+# DC_FLAG controls do concurrent GPU offload.  Set to the flag your
+# amdflang version uses, e.g.:
+#   -fdo-concurrent-to-openmp=gpu   (experimental, ROCm 6.x)
+
+SRC     = av_rem_test.F90
+EXE_GPU = av_rem_gpu
+EXE_CPU = av_rem_cpu
+
+FC       ?= amdflang
+GPU_ARCH ?= native
+DC_FLAG  ?= -fdo-concurrent-to-openmp=device
+
+GPU_FLAGS = -fopenmp                      \
+            --offload-arch=$(GPU_ARCH)    \
+            -ffp-contract=off             \
+            $(DC_FLAG)                    \
+            -O2
+
+CPU_FLAGS = -fopenmp \
+            -O2
+
+.PHONY: gpu cpu run_gpu run_cpu clean
+
+gpu: $(SRC)
+	$(FC) $(GPU_FLAGS) -o $(EXE_GPU) $<
+
+cpu: $(SRC)
+	$(FC) $(CPU_FLAGS) -o $(EXE_CPU) $<
+
+run_gpu: gpu
+	./$(EXE_GPU)
+
+run_cpu: cpu
+	./$(EXE_CPU)
+
+clean:
+	rm -f $(EXE_GPU) $(EXE_CPU)
