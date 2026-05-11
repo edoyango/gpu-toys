@@ -24,7 +24,7 @@ GPU_ARCH ?= native
 GPU_FLAGS = -fopenmp                              \
             --offload-arch=$(GPU_ARCH)            \
 			-ffp-contract=off                     \
-            -O1
+            -O3
 
 # CPU-only build: OpenMP is still enabled so the if-clause path is exercised,
 # but no device code is generated.
