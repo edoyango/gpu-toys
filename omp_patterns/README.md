@@ -93,4 +93,43 @@ Which is clearly simpler.
 And in both cases, the compiler does a better job of optimising. Furthermore, the AMD setup is now
 doing better than the tested NVIDIA setup by a meaningful margin at larger problem sizes.
 
+## Loop pattern 2: k-reduction
 
+This loop pattern is related to, but simpler than the first loop pattern. This simple reduces a 3d
+array by the 3rd index i.e. ijk -> ij. Importantly, because bitwise reproducibility is an aim, the
+reduction of the 3rd index must be serialised. In the ported MOM6 code, this is a jki loop to
+preserve CPU performance.
+
+```fortran
+!$omp target teams loop ! or target teams distribute
+do j=...
+  do k=... ! must be serialised
+    !$omp loop ! or parallel do
+    do i=...
+```
+
+|                   | 32x32x100 | 64x64x100 | 128x128x100 | 256x256x100 | 512x512x100 |
+| :---              | ---:      | ---:      | ---:        | ---:        | ---:        |
+| MI250x ROCm 6.4.1 | 0.956     | 1.823     | 3.713       | 7.440       | 16.536      |
+| V100 NVHPC 25.9   | 0.038     | 0.058     | 0.071       | 0.169       | 0.681       |
+
+The AMD setup is clearly struggling here, being at least an order of magnitude slower than the
+NVIDIA setup.
+
+If turned into a jik loop:
+
+```fortran
+!$omp target teams loop collapse(2)
+do j=...
+  do i=...
+    do k=...
+```
+
+then we get:
+
+|                   | 32x32x100 | 64x64x100 | 128x128x100 | 256x256x100 | 512x512x100 |
+| :---              | ---:      | ---:      | ---:        | ---:        | ---:        |
+| MI250x ROCm 6.4.1 | 0.057     | 0.057     | 0.059       | 0.108       | 0.382       |
+| V100 NVHPC 25.9   | 0.014     | 0.016     | 0.041       | 0.140       | 0.541       |
+
+The timings look like the difference between loop pattern 1a and 1b. 
