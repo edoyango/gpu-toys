@@ -1,49 +1,6 @@
-# Makefile for continuity_repro_test.F90
-#
-# Targets:
-#   gpu       – AMD GPU build via amdflang with OpenMP offload
-#   cpu       – host-only build via amdflang (no offload libraries needed)
-#   run_gpu   – build and run the GPU binary
-#   run_cpu   – build and run the CPU binary
-#   clean     – remove built binaries
-#
-# Customise the GPU architecture as needed, e.g.
-#   make gpu GPU_ARCH=gfx942    # MI300X
-#   make gpu GPU_ARCH=gfx908    # MI100
+TEST_SRC        = repro_tests.F90
+EXE_GPU         = repro_tests_gpu
+EXE_CPU         = repro_tests_cpu
+EXTRA_GPU_FLAGS = -DLOOP
 
-SRC     = repro_tests.F90
-EXE_GPU = repro_tests_gpu
-EXE_CPU = repro_tests_cpu
-
-FC       ?= amdflang
-GPU_ARCH ?= native
-
-# OpenMP offload flags for AMD flang (ROCm LLVM).
-# Two equivalent spellings are shown; the shorter --offload-arch form
-# is preferred on ROCm ≥ 5.7.
-GPU_FLAGS ?= -fopenmp                              \
-            --offload-arch=$(GPU_ARCH)            \
-			-ffp-contract=off                     \
-            -O3 -DLOOP
-
-# CPU-only build: OpenMP is still enabled so the if-clause path is exercised,
-# but no device code is generated.
-CPU_FLAGS = -fopenmp \
-            -O2
-
-.PHONY: gpu cpu run_gpu run_cpu clean
-
-gpu: $(SRC)
-	$(FC) $(GPU_FLAGS) -o $(EXE_GPU) $<
-
-cpu: $(SRC)
-	$(FC) $(CPU_FLAGS) -o $(EXE_CPU) $<
-
-run_gpu: gpu
-	./$(EXE_GPU)
-
-run_cpu: cpu
-	./$(EXE_CPU)
-
-clean:
-	rm -f $(EXE_GPU) $(EXE_CPU)
+include Makefile.common

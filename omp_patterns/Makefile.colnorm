@@ -1,44 +1,5 @@
-# Makefile for col_norm_test.F90
-#
-# Targets:
-#   gpu       – AMD GPU build via amdflang with OpenMP offload
-#   cpu       – host-only build (OpenMP enabled, no device code)
-#   run_gpu   – build and run the GPU binary
-#   run_cpu   – build and run the CPU binary
-#   clean     – remove built binaries
-#
-# Customise the GPU architecture as needed, e.g.
-#   make gpu GPU_ARCH=gfx942    # MI300X
-#   make gpu GPU_ARCH=gfx908    # MI100
+TEST_SRC = col_norm_test.F90
+EXE_GPU  = col_norm_gpu
+EXE_CPU  = col_norm_cpu
 
-SRC     = col_norm_test.F90
-EXE_GPU = col_norm_gpu
-EXE_CPU = col_norm_cpu
-
-FC       ?= amdflang
-GPU_ARCH ?= native
-
-GPU_FLAGS ?= -fopenmp                    \
-            --offload-arch=$(GPU_ARCH)  \
-            -ffp-contract=off           \
-            -O3
-
-CPU_FLAGS = -fopenmp \
-            -O2
-
-.PHONY: gpu cpu run_gpu run_cpu clean
-
-gpu: $(SRC)
-	$(FC) $(GPU_FLAGS) -o $(EXE_GPU) $<
-
-cpu: $(SRC)
-	$(FC) $(CPU_FLAGS) -o $(EXE_CPU) $<
-
-run_gpu: gpu
-	./$(EXE_GPU)
-
-run_cpu: cpu
-	./$(EXE_CPU)
-
-clean:
-	rm -f $(EXE_GPU) $(EXE_CPU)
+include Makefile.common

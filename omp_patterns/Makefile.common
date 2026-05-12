@@ -1,0 +1,44 @@
+# Common build infrastructure for omp_patterns tests.
+#
+# Per-test Makefiles set before including this file:
+#   TEST_SRC        – the test-specific source file
+#   EXE_GPU         – GPU binary name
+#   EXE_CPU         – CPU binary name
+#   GPU_OPT         – optimisation flag(s), default -O3
+#   EXTRA_GPU_FLAGS – any additional GPU-only flags (e.g. -DLOOP, $(DC_FLAG))
+#
+# Override compiler or arch on the command line:
+#   make gpu FC=amdflang GPU_ARCH=gfx942
+
+FC       ?= amdflang
+GPU_ARCH ?= native
+DC_FLAG  ?= -fdo-concurrent-to-openmp=device
+GPU_OPT  ?= -O3
+EXTRA_GPU_FLAGS ?=
+
+SRCS = test_utils.F90 $(TEST_SRC)
+
+GPU_FLAGS ?= -fopenmp                     \
+             --offload-arch=$(GPU_ARCH)  \
+             -ffp-contract=off           \
+             $(GPU_OPT)                  \
+             $(EXTRA_GPU_FLAGS)
+
+CPU_FLAGS  = -fopenmp -O2
+
+.PHONY: gpu cpu run_gpu run_cpu clean
+
+gpu: $(SRCS)
+	$(FC) $(GPU_FLAGS) -o $(EXE_GPU) $(SRCS)
+
+cpu: $(SRCS)
+	$(FC) $(CPU_FLAGS) -o $(EXE_CPU) $(SRCS)
+
+run_gpu: gpu
+	./$(EXE_GPU)
+
+run_cpu: cpu
+	./$(EXE_CPU)
+
+clean:
+	rm -f $(EXE_GPU) $(EXE_CPU) *.mod

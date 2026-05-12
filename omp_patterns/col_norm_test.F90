@@ -32,8 +32,8 @@
 ! Timing: multiple problem sizes (32..256), 5 timed runs each.
 
 module col_norm_mod
+  use test_utils_mod, only: dp
   implicit none
-  integer, parameter :: dp = kind(1.0d0)
 
 contains
 
@@ -222,70 +222,18 @@ contains
     enddo ; enddo ; enddo
   end subroutine run_colnorm_cpu
 
-  ! ------------------------------------------------------------------ !
-  !  Comparison helper for 3-D arrays (assumed-shape).                !
-  ! ------------------------------------------------------------------ !
-  subroutine compare_3d(label, a, b, passed)
-    character(*), intent(in)  :: label
-    real(dp),     intent(in)  :: a(:,:,:), b(:,:,:)
-    logical,      intent(out) :: passed
-    integer :: I, j, k, ni, nj, nz, ndiff
-    ni = size(a,1) ; nj = size(a,2) ; nz = size(a,3)
-    ndiff = 0
-    do k = 1, nz ; do j = 1, nj ; do I = 1, ni
-      if (a(I,j,k) /= b(I,j,k)) ndiff = ndiff + 1
-    enddo ; enddo ; enddo
-    passed = (ndiff == 0)
-    if (passed) then
-      write(*,'(A,A)') '  PASS  ', label
-    else
-      write(*,'(A,A,I0,A,I0,A)') '  FAIL  ', label//' — ', ndiff, ' of ', ni*nj*nz, ' points differ'
-      outer: do k = 1, nz ; do j = 1, nj ; do I = 1, ni
-        if (a(I,j,k) /= b(I,j,k)) then
-          write(*,'(A,3I4)')       '    first diff (I,j,k)=', I, j, k
-          write(*,'(A,E28.20)')    '    a = ', a(I,j,k)
-          write(*,'(A,E28.20)')    '    b = ', b(I,j,k)
-          write(*,'(A,Z16,A,Z16)') '    bits  a=', transfer(a(I,j,k), 0_8), &
-                                    '  b=', transfer(b(I,j,k), 0_8)
-          exit outer
-        endif
-      enddo ; enddo ; enddo outer
-    endif
-  end subroutine compare_3d
-
-  subroutine print_timing_stats(times)
-    real(dp), intent(in) :: times(:)
-    real(dp) :: sorted(size(times)), tmp, tmin, tmax, tavg, tmed
-    integer  :: n, i, j
-    n = size(times)
-    sorted = times
-    do i = 2, n
-      tmp = sorted(i) ; j = i - 1
-      do while (j >= 1 .and. sorted(j) > tmp)
-        sorted(j+1) = sorted(j) ; j = j - 1
-      enddo
-      sorted(j+1) = tmp
-    enddo
-    tmin = sorted(1)    ; tmax = sorted(n)
-    tavg = sum(times) / real(n, dp)
-    tmed = sorted((n+1)/2)
-    write(*,'(A,F10.6,A,F10.6,A,F10.6,A,F10.6,A)') &
-      '    min=', tmin, '  max=', tmax, '  avg=', tavg, '  med=', tmed, ' s'
-  end subroutine print_timing_stats
-
 end module col_norm_mod
 
 
 program test_col_norm
   use col_norm_mod
+  use test_utils_mod
   use omp_lib
   implicit none
 
   integer,  parameter :: nz           = 20
   integer,  parameter :: n_sizes      = 4
-  integer,  parameter :: n_runs       = 5
   integer,  parameter :: all_sizes(n_sizes) = [32, 64, 128, 256]
-  real(dp), parameter :: pi           = 3.14159265358979323846_dp
 
   real(dp), allocatable :: wt(:,:,:)
   real(dp), allocatable :: mask(:,:)

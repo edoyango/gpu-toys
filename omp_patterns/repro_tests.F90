@@ -19,9 +19,13 @@
 #define COMBINED_LOOP TEAMS_OUTER_LOOP PARALLEL_INNER_LOOP
 #endif
 
+#ifndef TEAM_SIZE
+#define TEAM_SIZE 256
+#endif
+
 module repro_mod
+  use test_utils_mod, only: dp
   implicit none
-  integer, parameter :: dp       = kind(1.0d0)
   integer, parameter :: max_itts = 20           ! flux-adjust iteration cap
 
 contains
@@ -34,6 +38,7 @@ contains
   ! ------------------------------------------------------------------ !
   elemental subroutine flux_elem(u, h, h_p1, visc_rem, dy, IdxT, IdxT_p1, dt, uh, duhdu)
     !$omp declare target
+
     real(dp), intent(in)  :: u, h, h_p1, visc_rem, dy, IdxT, IdxT_p1, dt
     real(dp), intent(out) :: uh, duhdu
     real(dp) :: CFL, h_upwind
@@ -59,11 +64,9 @@ contains
 
   ! GPU: single target teams, two distribute parallel do per layer —
   ! (1) copy visc_rem_u → block-indexed visc_rem, (2) call flux_elem.
-  subroutine run_continuity_gpu(nx, ny, nz, ni, nj,              &
-                                 i_start, i_end, j_start, j_end,  &
-                                 nteams, u, h_in, visc_rem_u,      &
-                                 dy_Cu, IdxT, IdxT_xp1, dt,        &
-                                 uh_t, duhdu_out)
+  subroutine run_continuity_gpu(nx, ny, nz, ni, nj, i_start, i_end, j_start, j_end, nteams, u, &
+    h_in, visc_rem_u, dy_Cu, IdxT, IdxT_xp1, dt, uh_t, duhdu_out)
+
     integer,  intent(in)  :: nx, ny, nz, ni, nj
     integer,  intent(in)  :: i_start, i_end, j_start, j_end, nteams
     real(dp), intent(in)  :: u(nx, ny, nz)
@@ -77,10 +80,9 @@ contains
     real(dp) :: visc_rem(ni, nj, nz)
     integer  :: i, j, k, ii, jj
 
-    !$omp target teams num_teams(nteams)                          &
-    !$omp map(to: u, h_in, visc_rem_u, dy_Cu, IdxT, IdxT_xp1)  &
-    !$omp map(from: uh_t, duhdu_out)                             &
-    !$omp map(alloc: visc_rem)
+    !$omp target teams num_teams(nteams) &
+    !$omp  map(to: u, h_in, visc_rem_u, dy_Cu, IdxT, IdxT_xp1) map(from: uh_t, duhdu_out) &
+    !$omp  map(alloc: visc_rem)
     do k = 1, nz
       !$omp COMBINED_LOOP collapse(2) private(ii, jj)
       do j = j_start, j_end ; do i = i_start, i_end
@@ -90,20 +92,17 @@ contains
       !$omp COMBINED_LOOP collapse(2) private(ii, jj)
       do j = j_start, j_end ; do i = i_start, i_end
         ii = i - i_start + 1 ; jj = j - j_start + 1
-        call flux_elem(u(i,j,k), h_in(i,j,k), h_in(i+1,j,k), visc_rem(ii,jj,k), &
-                       dy_Cu(i,j), IdxT(i,j), IdxT_xp1(i,j), dt,                  &
-                       uh_t(ii,jj,k), duhdu_out(ii,jj,k))
+        call flux_elem(u(i,j,k), h_in(i,j,k), h_in(i+1,j,k), visc_rem(ii,jj,k), dy_Cu(i,j), &
+          IdxT(i,j), IdxT_xp1(i,j), dt, uh_t(ii,jj,k), duhdu_out(ii,jj,k))
       enddo ; enddo
     enddo
     !$omp end target teams
   end subroutine run_continuity_gpu
 
   ! CPU reference: identical logic, no OpenMP.
-  subroutine run_continuity_cpu(nx, ny, nz, ni, nj,              &
-                                 i_start, i_end, j_start, j_end,  &
-                                 u, h_in, visc_rem_u,              &
-                                 dy_Cu, IdxT, IdxT_xp1, dt,        &
-                                 uh_t, duhdu_out)
+  subroutine run_continuity_cpu(nx, ny, nz, ni, nj, i_start, i_end, j_start, j_end, u, h_in, &
+    visc_rem_u, dy_Cu, IdxT, IdxT_xp1, dt, uh_t, duhdu_out)
+
     integer,  intent(in)  :: nx, ny, nz, ni, nj
     integer,  intent(in)  :: i_start, i_end, j_start, j_end
     real(dp), intent(in)  :: u(nx, ny, nz)
@@ -124,9 +123,8 @@ contains
       enddo ; enddo
       do j = j_start, j_end ; do i = i_start, i_end
         ii = i - i_start + 1 ; jj = j - j_start + 1
-        call flux_elem(u(i,j,k), h_in(i,j,k), h_in(i+1,j,k), visc_rem(ii,jj,k), &
-                       dy_Cu(i,j), IdxT(i,j), IdxT_xp1(i,j), dt,                  &
-                       uh_t(ii,jj,k), duhdu_out(ii,jj,k))
+        call flux_elem(u(i,j,k), h_in(i,j,k), h_in(i+1,j,k), visc_rem(ii,jj,k), dy_Cu(i,j), &
+          IdxT(i,j), IdxT_xp1(i,j), dt, uh_t(ii,jj,k), duhdu_out(ii,jj,k))
       enddo ; enddo
     enddo
   end subroutine run_continuity_cpu
@@ -138,15 +136,10 @@ contains
   ! GPU: persistent work arrays via target enter/exit data; sequential
   ! Newton/bisection do-itt loop runs entirely inside one target teams
   ! region, with distribute parallel do for all (j,i) work.
-  subroutine zonal_flux_adjust_gpu(nx, ny, nz, ni, nj,                    &
-                                    i_start, i_end, j_start, j_end, nteams, &
-                                    u, h_in, visc_rem,                       &
-                                    uhbt, uh_tot_0, duhdu_tot_0,             &
-                                    du_max_CFL, du_min_CFL, do_I_in,         &
-                                    IareaT, IareaT_xp1,                      &
-                                    dy_Cu, IdxT, IdxT_xp1,                   &
-                                    dt, tol_eta_base, tol_vel, better_iter,  &
-                                    du, uh_3d)
+  subroutine zonal_flux_adjust_gpu(nx, ny, nz, ni, nj, i_start, i_end, j_start, j_end, nteams, u, &
+    h_in, visc_rem, uhbt, uh_tot_0, duhdu_tot_0, du_max_CFL, du_min_CFL, do_I_in, IareaT, &
+    IareaT_xp1, dy_Cu, IdxT, IdxT_xp1, dt, tol_eta_base, tol_vel, better_iter, du, uh_3d)
+
     integer,  intent(in)  :: nx, ny, nz, ni, nj
     integer,  intent(in)  :: i_start, i_end, j_start, j_end, nteams
     real(dp), intent(in)  :: u(nx, ny, nz)
@@ -175,11 +168,10 @@ contains
     real(dp) :: tol_eta, u_new, duhdu_loc, ddu, du_prev
 
     !$omp target enter data &
-    !$omp   map(alloc: uh_err, uh_err_best, duhdu_tot, du_min, du_max, do_I)
+    !$omp  map(alloc: uh_err, uh_err_best, duhdu_tot, du_min, du_max, do_I)
 
     !$omp target teams COMBINED_LOOP collapse(2) &
-    !$omp   map(to: do_I_in, du_max_CFL, du_min_CFL, uh_tot_0, uhbt, duhdu_tot_0) &
-    !$omp   map(from: du)
+    !$omp  map(to: do_I_in, du_max_CFL, du_min_CFL, uh_tot_0, uhbt, duhdu_tot_0) map(from: du)
     do j = j_start, j_end ; do i = i_start, i_end
       ii = i - i_start + 1 ; jj = j - j_start + 1
       du(ii,jj)          = 0.0_dp  ;  do_I(ii,jj)      = do_I_in(ii,jj)
@@ -190,11 +182,10 @@ contains
       uh_err_best(ii,jj) = abs(uh_err(ii,jj))
     enddo ; enddo
 
-    !$omp target teams private(k,itt,tol_eta)                                                             &
-    !$omp   map(to: u, h_in, visc_rem, uhbt, uh_tot_0, duhdu_tot_0,        &
-    !$omp       du_max_CFL, du_min_CFL, do_I_in, IareaT, IareaT_xp1,       &
-    !$omp       dy_Cu, IdxT, IdxT_xp1)                                      &
-    !$omp   map(tofrom: du) map(from: uh_3d)
+    !$omp target teams num_teams(nteams) private(k,itt,tol_eta) &
+    !$omp  map(to: u, h_in, visc_rem, uhbt, uh_tot_0, duhdu_tot_0, du_max_CFL, du_min_CFL, &
+    !$omp    do_I_in, IareaT, IareaT_xp1, dy_Cu, IdxT, IdxT_xp1) &
+    !$omp  map(tofrom: du) map(from: uh_3d)
 
     do itt = 1, max_itts
       select case (itt)
@@ -258,9 +249,8 @@ contains
           ii = i - i_start + 1 ; jj = j - j_start + 1
           if (do_I(ii,jj)) then
             u_new = u(i,j,k) + du(ii,jj) * visc_rem(ii,jj,k)
-            call flux_elem(u_new, h_in(i,j,k), h_in(i+1,j,k), visc_rem(ii,jj,k), &
-                           dy_Cu(i,j), IdxT(i,j), IdxT_xp1(i,j), dt,               &
-                           uh_3d(ii,jj,k), duhdu_loc)
+            call flux_elem(u_new, h_in(i,j,k), h_in(i+1,j,k), visc_rem(ii,jj,k), dy_Cu(i,j), &
+              IdxT(i,j), IdxT_xp1(i,j), dt, uh_3d(ii,jj,k), duhdu_loc)
             uh_err(ii,jj)    = uh_err(ii,jj)    + uh_3d(ii,jj,k)
             duhdu_tot(ii,jj) = duhdu_tot(ii,jj) + duhdu_loc
           endif
@@ -278,19 +268,14 @@ contains
     !$omp end target teams
 
     !$omp target exit data &
-    !$omp   map(release: uh_err, uh_err_best, duhdu_tot, du_min, du_max, do_I)
+    !$omp  map(release: uh_err, uh_err_best, duhdu_tot, du_min, du_max, do_I)
   end subroutine zonal_flux_adjust_gpu
 
   ! CPU reference: identical logic, no OpenMP, domore early-exit enabled.
-  subroutine zonal_flux_adjust_cpu(nx, ny, nz, ni, nj,                    &
-                                    i_start, i_end, j_start, j_end,         &
-                                    u, h_in, visc_rem,                       &
-                                    uhbt, uh_tot_0, duhdu_tot_0,             &
-                                    du_max_CFL, du_min_CFL, do_I_in,         &
-                                    IareaT, IareaT_xp1,                      &
-                                    dy_Cu, IdxT, IdxT_xp1,                   &
-                                    dt, tol_eta_base, tol_vel, better_iter,  &
-                                    du, uh_3d)
+  subroutine zonal_flux_adjust_cpu(nx, ny, nz, ni, nj, i_start, i_end, j_start, j_end, u, h_in, &
+    visc_rem, uhbt, uh_tot_0, duhdu_tot_0, du_max_CFL, du_min_CFL, do_I_in, IareaT, IareaT_xp1, &
+    dy_Cu, IdxT, IdxT_xp1, dt, tol_eta_base, tol_vel, better_iter, du, uh_3d)
+
     integer,  intent(in)  :: nx, ny, nz, ni, nj
     integer,  intent(in)  :: i_start, i_end, j_start, j_end
     real(dp), intent(in)  :: u(nx, ny, nz)
@@ -383,9 +368,8 @@ contains
           ii = i - i_start + 1 ; jj = j - j_start + 1
           if (do_I(ii,jj)) then
             u_new = u(i,j,k) + du(ii,jj) * visc_rem(ii,jj,k)
-            call flux_elem(u_new, h_in(i,j,k), h_in(i+1,j,k), visc_rem(ii,jj,k), &
-                           dy_Cu(i,j), IdxT(i,j), IdxT_xp1(i,j), dt,               &
-                           uh_3d(ii,jj,k), duhdu_loc)
+            call flux_elem(u_new, h_in(i,j,k), h_in(i+1,j,k), visc_rem(ii,jj,k), dy_Cu(i,j), &
+              IdxT(i,j), IdxT_xp1(i,j), dt, uh_3d(ii,jj,k), duhdu_loc)
             uh_err(ii,jj)    = uh_err(ii,jj)    + uh_3d(ii,jj,k)
             duhdu_tot(ii,jj) = duhdu_tot(ii,jj) + duhdu_loc
           endif
@@ -408,15 +392,10 @@ contains
   ! The full do-itt Newton/bisection loop and do-k flux loop run serially
   ! inside each thread.  Per-column accumulators become scalar private
   ! variables — no persistent device allocations are required.
-  subroutine zonal_flux_adjust_gpu_ij(nx, ny, nz, ni, nj,                    &
-                                       i_start, i_end, j_start, j_end, nteams, &
-                                       u, h_in, visc_rem,                       &
-                                       uhbt, uh_tot_0, duhdu_tot_0,             &
-                                       du_max_CFL, du_min_CFL, do_I_in,         &
-                                       IareaT, IareaT_xp1,                      &
-                                       dy_Cu, IdxT, IdxT_xp1,                   &
-                                       dt, tol_eta_base, tol_vel, better_iter,  &
-                                       du, uh_3d)
+  subroutine zonal_flux_adjust_gpu_ij(nx, ny, nz, ni, nj, i_start, i_end, j_start, j_end, nteams, &
+    u, h_in, visc_rem, uhbt, uh_tot_0, duhdu_tot_0, du_max_CFL, du_min_CFL, do_I_in, IareaT, &
+    IareaT_xp1, dy_Cu, IdxT, IdxT_xp1, dt, tol_eta_base, tol_vel, better_iter, du, uh_3d)
+
     integer,  intent(in)  :: nx, ny, nz, ni, nj
     integer,  intent(in)  :: i_start, i_end, j_start, j_end, nteams
     real(dp), intent(in)  :: u(nx, ny, nz)
@@ -437,14 +416,11 @@ contains
     real(dp) :: tol_eta, u_new, duhdu_loc, ddu, du_prev
     logical  :: do_I_loc
 
-    !$omp target teams COMBINED_LOOP collapse(2) num_teams(nteams)                                        &
-    !$omp   map(to: u, h_in, visc_rem, uhbt, uh_tot_0, duhdu_tot_0,            &
-    !$omp       du_max_CFL, du_min_CFL, do_I_in, IareaT, IareaT_xp1,           &
-    !$omp       dy_Cu, IdxT, IdxT_xp1)                                          &
-    !$omp   map(from: du, uh_3d) &
-    !$omp   private(ii, jj, uh_err, uh_err_best, duhdu_tot_loc,                 &
-    !$omp           du_min_loc, du_max_loc, du_loc, do_I_loc,                   &
-    !$omp           tol_eta, u_new, duhdu_loc, ddu, du_prev)
+    !$omp target teams COMBINED_LOOP collapse(2) num_teams(nteams) &
+    !$omp  map(to: u, h_in, visc_rem, uhbt, uh_tot_0, duhdu_tot_0, du_max_CFL, du_min_CFL, &
+    !$omp    do_I_in, IareaT, IareaT_xp1, dy_Cu, IdxT, IdxT_xp1) map(from: du, uh_3d) &
+    !$omp  private(ii, jj, uh_err, uh_err_best, duhdu_tot_loc, du_min_loc, du_max_loc, du_loc, &
+    !$omp    do_I_loc, tol_eta, u_new, duhdu_loc, ddu, du_prev)
     do j = j_start, j_end ; do i = i_start, i_end
       ii = i - i_start + 1 ; jj = j - j_start + 1
 
@@ -501,9 +477,8 @@ contains
         do k = 1, nz
           if (do_I_loc) then
             u_new = u(i,j,k) + du_loc * visc_rem(ii,jj,k)
-            call flux_elem(u_new, h_in(i,j,k), h_in(i+1,j,k), visc_rem(ii,jj,k), &
-                           dy_Cu(i,j), IdxT(i,j), IdxT_xp1(i,j), dt,               &
-                           uh_3d(ii,jj,k), duhdu_loc)
+            call flux_elem(u_new, h_in(i,j,k), h_in(i+1,j,k), visc_rem(ii,jj,k), dy_Cu(i,j), &
+              IdxT(i,j), IdxT_xp1(i,j), dt, uh_3d(ii,jj,k), duhdu_loc)
             uh_err        = uh_err        + uh_3d(ii,jj,k)
             duhdu_tot_loc = duhdu_tot_loc + duhdu_loc
           endif
@@ -528,15 +503,10 @@ contains
   ! update, Newton/bisection, reset, serial do-k flux accumulation, and
   ! best-error update into one loop body.  Shared work arrays still need
   ! target enter/exit data because they persist across do-itt iterations.
-  subroutine zonal_flux_adjust_gpu_fused(nx, ny, nz, ni, nj,                    &
-                                          i_start, i_end, j_start, j_end, nteams, &
-                                          u, h_in, visc_rem,                       &
-                                          uhbt, uh_tot_0, duhdu_tot_0,             &
-                                          du_max_CFL, du_min_CFL, do_I_in,         &
-                                          IareaT, IareaT_xp1,                      &
-                                          dy_Cu, IdxT, IdxT_xp1,                   &
-                                          dt, tol_eta_base, tol_vel, better_iter,  &
-                                          du, uh_3d)
+  subroutine zonal_flux_adjust_gpu_fused(nx, ny, nz, ni, nj, i_start, i_end, j_start, j_end, &
+    nteams, u, h_in, visc_rem, uhbt, uh_tot_0, duhdu_tot_0, du_max_CFL, du_min_CFL, do_I_in, &
+    IareaT, IareaT_xp1, dy_Cu, IdxT, IdxT_xp1, dt, tol_eta_base, tol_vel, better_iter, du, uh_3d)
+
     integer,  intent(in)  :: nx, ny, nz, ni, nj
     integer,  intent(in)  :: i_start, i_end, j_start, j_end, nteams
     real(dp), intent(in)  :: u(nx, ny, nz)
@@ -559,13 +529,11 @@ contains
     real(dp) :: tol_eta, u_new, duhdu_loc, ddu, du_prev
 
     !$omp target enter data &
-    !$omp   map(alloc: uh_err, uh_err_best, duhdu_tot, du_min, du_max, do_I)
+    !$omp  map(alloc: uh_err, uh_err_best, duhdu_tot, du_min, du_max, do_I)
 
-    !$omp target teams private(k,itt,tol_eta)                         &
-    !$omp   map(to: u, h_in, visc_rem, uhbt, uh_tot_0, duhdu_tot_0,            &
-    !$omp       du_max_CFL, du_min_CFL, do_I_in, IareaT, IareaT_xp1,           &
-    !$omp       dy_Cu, IdxT, IdxT_xp1)                                          &
-    !$omp   map(from: du, uh_3d)
+    !$omp target teams num_teams(nteams) private(k,itt,tol_eta) &
+    !$omp  map(to: u, h_in, visc_rem, uhbt, uh_tot_0, duhdu_tot_0, du_max_CFL, du_min_CFL, &
+    !$omp    do_I_in, IareaT, IareaT_xp1, dy_Cu, IdxT, IdxT_xp1) map(from: du, uh_3d)
 
     !$omp COMBINED_LOOP collapse(2) private(ii, jj)
     do j = j_start, j_end ; do i = i_start, i_end
@@ -633,9 +601,8 @@ contains
         do k = 1, nz
           if (do_I(ii,jj)) then
             u_new = u(i,j,k) + du(ii,jj) * visc_rem(ii,jj,k)
-            call flux_elem(u_new, h_in(i,j,k), h_in(i+1,j,k), visc_rem(ii,jj,k), &
-                           dy_Cu(i,j), IdxT(i,j), IdxT_xp1(i,j), dt,               &
-                           uh_3d(ii,jj,k), duhdu_loc)
+            call flux_elem(u_new, h_in(i,j,k), h_in(i+1,j,k), visc_rem(ii,jj,k), dy_Cu(i,j), &
+              IdxT(i,j), IdxT_xp1(i,j), dt, uh_3d(ii,jj,k), duhdu_loc)
             uh_err(ii,jj)    = uh_err(ii,jj)    + uh_3d(ii,jj,k)
             duhdu_tot(ii,jj) = duhdu_tot(ii,jj) + duhdu_loc
           endif
@@ -651,7 +618,7 @@ contains
     !$omp end target teams
 
     !$omp target exit data &
-    !$omp   map(release: uh_err, uh_err_best, duhdu_tot, du_min, du_max, do_I)
+    !$omp  map(release: uh_err, uh_err_best, duhdu_tot, du_min, du_max, do_I)
   end subroutine zonal_flux_adjust_gpu_fused
 
   ! ================================================================== !
@@ -664,15 +631,10 @@ contains
   ! over i before advancing to the next level.  Work arrays (uh_err etc.)
   ! are 2D (ni,nj) on device via target enter/exit data; each team
   ! accesses its own jj-slice, so there are no cross-team conflicts.
-  subroutine zonal_flux_adjust_gpu_ji(nx, ny, nz, ni, nj,                    &
-                                       i_start, i_end, j_start, j_end, nteams, &
-                                       u, h_in, visc_rem,                       &
-                                       uhbt, uh_tot_0, duhdu_tot_0,             &
-                                       du_max_CFL, du_min_CFL, do_I_in,         &
-                                       IareaT, IareaT_xp1,                      &
-                                       dy_Cu, IdxT, IdxT_xp1,                   &
-                                       dt, tol_eta_base, tol_vel, better_iter,  &
-                                       du, uh_3d)
+  subroutine zonal_flux_adjust_gpu_ji(nx, ny, nz, ni, nj, i_start, i_end, j_start, j_end, nteams, &
+    u, h_in, visc_rem, uhbt, uh_tot_0, duhdu_tot_0, du_max_CFL, du_min_CFL, do_I_in, IareaT, &
+    IareaT_xp1, dy_Cu, IdxT, IdxT_xp1, dt, tol_eta_base, tol_vel, better_iter, du, uh_3d)
+
     integer,  intent(in)  :: nx, ny, nz, ni, nj
     integer,  intent(in)  :: i_start, i_end, j_start, j_end, nteams
     real(dp), intent(in)  :: u(nx, ny, nz)
@@ -695,13 +657,11 @@ contains
     real(dp) :: tol_eta, u_new, duhdu_loc, ddu, du_prev
 
     !$omp target enter data &
-    !$omp   map(alloc: uh_err, uh_err_best, duhdu_tot, du_min, du_max, do_I)
+    !$omp  map(alloc: uh_err, uh_err_best, duhdu_tot, du_min, du_max, do_I)
 
-    !$omp target teams TEAMS_OUTER_LOOP num_teams(nj)                               &
-    !$omp   map(to: u, h_in, visc_rem, uhbt, uh_tot_0, duhdu_tot_0,         &
-    !$omp       du_max_CFL, du_min_CFL, do_I_in, IareaT, IareaT_xp1,        &
-    !$omp       dy_Cu, IdxT, IdxT_xp1)                                       &
-    !$omp   map(from: du, uh_3d)
+    !$omp target teams TEAMS_OUTER_LOOP num_teams(nj) &
+    !$omp  map(to: u, h_in, visc_rem, uhbt, uh_tot_0, duhdu_tot_0, du_max_CFL, du_min_CFL, &
+    !$omp    do_I_in, IareaT, IareaT_xp1, dy_Cu, IdxT, IdxT_xp1) map(from: du, uh_3d)
     do j = j_start, j_end
       jj = j - j_start + 1
 
@@ -778,9 +738,8 @@ contains
             ii = i - i_start + 1
             if (do_I(ii,jj)) then
               u_new = u(i,j,k) + du(ii,jj) * visc_rem(ii,jj,k)
-              call flux_elem(u_new, h_in(i,j,k), h_in(i+1,j,k), visc_rem(ii,jj,k), &
-                             dy_Cu(i,j), IdxT(i,j), IdxT_xp1(i,j), dt,               &
-                             uh_3d(ii,jj,k), duhdu_loc)
+              call flux_elem(u_new, h_in(i,j,k), h_in(i+1,j,k), visc_rem(ii,jj,k), dy_Cu(i,j), &
+                IdxT(i,j), IdxT_xp1(i,j), dt, uh_3d(ii,jj,k), duhdu_loc)
               uh_err(ii,jj)    = uh_err(ii,jj)    + uh_3d(ii,jj,k)
               duhdu_tot(ii,jj) = duhdu_tot(ii,jj) + duhdu_loc
             endif
@@ -798,105 +757,24 @@ contains
     enddo
 
     !$omp target exit data &
-    !$omp   map(release: uh_err, uh_err_best, duhdu_tot, du_min, du_max, do_I)
+    !$omp  map(release: uh_err, uh_err_best, duhdu_tot, du_min, du_max, do_I)
   end subroutine zonal_flux_adjust_gpu_ji
-
-  ! ================================================================== !
-  !  Shared comparison helpers                                          !
-  ! ================================================================== !
-
-  subroutine compare_3d(label, a_gpu, a_cpu, passed)
-    character(*), intent(in)  :: label
-    real(dp),     intent(in)  :: a_gpu(:,:,:), a_cpu(:,:,:)
-    logical,      intent(out) :: passed
-    integer :: i, j, k, ni, nj, nz, ndiff
-    ni = size(a_gpu,1) ; nj = size(a_gpu,2) ; nz = size(a_gpu,3)
-    ndiff = 0
-    do k = 1, nz ; do j = 1, nj ; do i = 1, ni
-      if (a_gpu(i,j,k) /= a_cpu(i,j,k)) ndiff = ndiff + 1
-    enddo ; enddo ; enddo
-    passed = (ndiff == 0)
-    if (passed) then
-      write(*,'(A,A)') '  PASS  ', label
-    else
-      write(*,'(A,A,I0,A,I0,A)') '  FAIL  ', label//' — ', ndiff, ' of ', ni*nj*nz, ' points differ'
-      outer3: do k = 1, nz ; do j = 1, nj ; do i = 1, ni
-        if (a_gpu(i,j,k) /= a_cpu(i,j,k)) then
-          write(*,'(A,3I4)')       '    first diff (i,j,k)=', i, j, k
-          write(*,'(A,E28.20)')    '    gpu = ', a_gpu(i,j,k)
-          write(*,'(A,E28.20)')    '    cpu = ', a_cpu(i,j,k)
-          write(*,'(A,Z16,A,Z16)') '    bits  gpu=', transfer(a_gpu(i,j,k), 0_8), &
-                                    '  cpu=', transfer(a_cpu(i,j,k), 0_8)
-          exit outer3
-        endif
-      enddo ; enddo ; enddo outer3
-    endif
-  end subroutine compare_3d
-
-  subroutine compare_2d(label, a_gpu, a_cpu, passed)
-    character(*), intent(in)  :: label
-    real(dp),     intent(in)  :: a_gpu(:,:), a_cpu(:,:)
-    logical,      intent(out) :: passed
-    integer :: i, j, ni, nj, ndiff
-    ni = size(a_gpu,1) ; nj = size(a_gpu,2)
-    ndiff = 0
-    do j = 1, nj ; do i = 1, ni
-      if (a_gpu(i,j) /= a_cpu(i,j)) ndiff = ndiff + 1
-    enddo ; enddo
-    passed = (ndiff == 0)
-    if (passed) then
-      write(*,'(A,A)') '  PASS  ', label
-    else
-      write(*,'(A,A,I0,A,I0,A)') '  FAIL  ', label//' — ', ndiff, ' of ', ni*nj, ' points differ'
-      outer2: do j = 1, nj ; do i = 1, ni
-        if (a_gpu(i,j) /= a_cpu(i,j)) then
-          write(*,'(A,2I4)')       '    first diff (i,j)=', i, j
-          write(*,'(A,E28.20)')    '    gpu = ', a_gpu(i,j)
-          write(*,'(A,E28.20)')    '    cpu = ', a_cpu(i,j)
-          write(*,'(A,Z16,A,Z16)') '    bits  gpu=', transfer(a_gpu(i,j), 0_8), &
-                                    '  cpu=', transfer(a_cpu(i,j), 0_8)
-          exit outer2
-        endif
-      enddo ; enddo outer2
-    endif
-  end subroutine compare_2d
-
-  subroutine print_timing_stats(times)
-    real(dp), intent(in) :: times(:)
-    real(dp) :: sorted(size(times)), tmp, tmin, tmax, tavg, tmed
-    integer  :: n, i, j
-    n = size(times)
-    sorted = times
-    do i = 2, n
-      tmp = sorted(i) ; j = i - 1
-      do while (j >= 1 .and. sorted(j) > tmp)
-        sorted(j+1) = sorted(j) ; j = j - 1
-      enddo
-      sorted(j+1) = tmp
-    enddo
-    tmin = sorted(1)    ; tmax = sorted(n)
-    tavg = sum(times) / real(n, dp)
-    tmed = sorted((n+1)/2)
-    write(*,'(A,F10.6,A,F10.6,A,F10.6,A,F10.6,A)') &
-      '    min=', tmin, '  max=', tmax, '  avg=', tavg, '  med=', tmed, ' s'
-  end subroutine print_timing_stats
 
 end module repro_mod
 
 
 program test_repro
   use repro_mod
+  use test_utils_mod
   use omp_lib
   implicit none
 
   integer,  parameter :: nz           = 100
   integer,  parameter :: n_sizes      = 2
-  integer,  parameter :: n_runs       = 5
   integer,  parameter :: all_sizes(n_sizes) = [32, 64]
   real(dp), parameter :: dt           = 900.0_dp
   real(dp), parameter :: tol_eta_base = 1.0e-10_dp
   real(dp), parameter :: tol_vel      = 1.0e-10_dp
-  real(dp), parameter :: pi           = 3.14159265358979323846_dp
 
   ! Allocatable arrays — resized for each problem size in the loop below.
   real(dp), allocatable :: u(:,:,:)
@@ -926,7 +804,7 @@ program test_repro
     ni = nx ; nj = ny
     i_start = 1 ; i_end = nx
     j_start = 1 ; j_end = ny
-    nteams  = (ni * nj + 255) / 256
+    nteams  = (ni * nj + TEAM_SIZE-1) / TEAM_SIZE
 
     write(*,*)
     write(*,'(A)') '========================================================'
@@ -973,8 +851,8 @@ program test_repro
     duhdu_tot_0(:,:) = 0.0_dp
     do k = 1, nz ; do j = j_start, j_end ; do i = i_start, i_end
       ii = i - i_start + 1 ; jj = j - j_start + 1
-      call flux_elem(u(i,j,k), h_in(i,j,k), h_in(i+1,j,k), visc_rem(ii,jj,k), &
-                     dy_Cu(i,j), IdxT(i,j), IdxT_xp1(i,j), dt, tmp_uh, tmp_duhdu)
+      call flux_elem(u(i,j,k), h_in(i,j,k), h_in(i+1,j,k), visc_rem(ii,jj,k), dy_Cu(i,j), &
+        IdxT(i,j), IdxT_xp1(i,j), dt, tmp_uh, tmp_duhdu)
       uh_tot_0(ii,jj)    = uh_tot_0(ii,jj)    + tmp_uh
       duhdu_tot_0(ii,jj) = duhdu_tot_0(ii,jj) + tmp_duhdu
     enddo ; enddo ; enddo
@@ -989,72 +867,41 @@ program test_repro
     write(*,*)
     write(*,*) '--- Correctness ---'
 
-    call run_continuity_gpu(nx, ny, nz, ni, nj,                    &
-                            i_start, i_end, j_start, j_end, nteams, &
-                            u, h_in, visc_rem,                       &
-                            dy_Cu, IdxT, IdxT_xp1, dt,               &
-                            uh_gpu, duhdu_gpu)
-    call run_continuity_cpu(nx, ny, nz, ni, nj,                    &
-                            i_start, i_end, j_start, j_end,          &
-                            u, h_in, visc_rem,                       &
-                            dy_Cu, IdxT, IdxT_xp1, dt,               &
-                            uh_cpu, duhdu_cpu)
+    call run_continuity_gpu(nx, ny, nz, ni, nj, i_start, i_end, j_start, j_end, nteams, u, h_in, &
+      visc_rem, dy_Cu, IdxT, IdxT_xp1, dt, uh_gpu, duhdu_gpu)
+    call run_continuity_cpu(nx, ny, nz, ni, nj, i_start, i_end, j_start, j_end, u, h_in, visc_rem, &
+      dy_Cu, IdxT, IdxT_xp1, dt, uh_cpu, duhdu_cpu)
     !$omp taskwait
     call compare_3d('Test1 uh_t  ', uh_gpu,    uh_cpu,    p1)
     call compare_3d('Test1 duhdu ', duhdu_gpu, duhdu_cpu, p2)
 
-    call zonal_flux_adjust_gpu(nx, ny, nz, ni, nj,                         &
-                                i_start, i_end, j_start, j_end, nteams,     &
-                                u, h_in, visc_rem,                           &
-                                uhbt, uh_tot_0, duhdu_tot_0,                 &
-                                du_max_CFL, du_min_CFL, do_I_in,             &
-                                IareaT, IareaT_xp1, dy_Cu, IdxT, IdxT_xp1,  &
-                                dt, tol_eta_base, tol_vel, .false.,          &
-                                du_gpu, uh3d_gpu)
-    call zonal_flux_adjust_cpu(nx, ny, nz, ni, nj,                         &
-                                i_start, i_end, j_start, j_end,             &
-                                u, h_in, visc_rem,                           &
-                                uhbt, uh_tot_0, duhdu_tot_0,                 &
-                                du_max_CFL, du_min_CFL, do_I_in,             &
-                                IareaT, IareaT_xp1, dy_Cu, IdxT, IdxT_xp1,  &
-                                dt, tol_eta_base, tol_vel, .false.,          &
-                                du_cpu, uh3d_cpu)
+    call zonal_flux_adjust_gpu(nx, ny, nz, ni, nj, i_start, i_end, j_start, j_end, nteams, u, &
+      h_in, visc_rem, uhbt, uh_tot_0, duhdu_tot_0, du_max_CFL, du_min_CFL, do_I_in, IareaT, &
+      IareaT_xp1, dy_Cu, IdxT, IdxT_xp1, dt, tol_eta_base, tol_vel, .false., du_gpu, uh3d_gpu)
+    call zonal_flux_adjust_cpu(nx, ny, nz, ni, nj, i_start, i_end, j_start, j_end, u, h_in, &
+      visc_rem, uhbt, uh_tot_0, duhdu_tot_0, du_max_CFL, du_min_CFL, do_I_in, IareaT, IareaT_xp1, &
+      dy_Cu, IdxT, IdxT_xp1, dt, tol_eta_base, tol_vel, .false., du_cpu, uh3d_cpu)
     !$omp taskwait
     call compare_2d('Test2 du    ', du_gpu,   du_cpu,   p3)
     call compare_3d('Test2 uh_3d ', uh3d_gpu, uh3d_cpu, p4)
 
-    call zonal_flux_adjust_gpu_ij(nx, ny, nz, ni, nj,                         &
-                                   i_start, i_end, j_start, j_end, nteams,     &
-                                   u, h_in, visc_rem,                           &
-                                   uhbt, uh_tot_0, duhdu_tot_0,                 &
-                                   du_max_CFL, du_min_CFL, do_I_in,             &
-                                   IareaT, IareaT_xp1, dy_Cu, IdxT, IdxT_xp1,  &
-                                   dt, tol_eta_base, tol_vel, .false.,          &
-                                   du_gpuij, uh3d_gpuij)
+    call zonal_flux_adjust_gpu_ij(nx, ny, nz, ni, nj, i_start, i_end, j_start, j_end, nteams, u, &
+      h_in, visc_rem, uhbt, uh_tot_0, duhdu_tot_0, du_max_CFL, du_min_CFL, do_I_in, IareaT, &
+      IareaT_xp1, dy_Cu, IdxT, IdxT_xp1, dt, tol_eta_base, tol_vel, .false., du_gpuij, uh3d_gpuij)
     !$omp taskwait
     call compare_2d('Test3 du ij ', du_gpuij,   du_cpu,   p5)
     call compare_3d('Test3 uh ij ', uh3d_gpuij, uh3d_cpu, p6)
 
-    call zonal_flux_adjust_gpu_fused(nx, ny, nz, ni, nj,                         &
-                                      i_start, i_end, j_start, j_end, nteams,     &
-                                      u, h_in, visc_rem,                           &
-                                      uhbt, uh_tot_0, duhdu_tot_0,                 &
-                                      du_max_CFL, du_min_CFL, do_I_in,             &
-                                      IareaT, IareaT_xp1, dy_Cu, IdxT, IdxT_xp1,  &
-                                      dt, tol_eta_base, tol_vel, .false.,          &
-                                      du_gpufu, uh3d_gpufu)
+    call zonal_flux_adjust_gpu_fused(nx, ny, nz, ni, nj, i_start, i_end, j_start, j_end, nteams, &
+      u, h_in, visc_rem, uhbt, uh_tot_0, duhdu_tot_0, du_max_CFL, du_min_CFL, do_I_in, IareaT, &
+      IareaT_xp1, dy_Cu, IdxT, IdxT_xp1, dt, tol_eta_base, tol_vel, .false., du_gpufu, uh3d_gpufu)
     !$omp taskwait
     call compare_2d('Test4 du fu ', du_gpufu,   du_cpu,   p7)
     call compare_3d('Test4 uh fu ', uh3d_gpufu, uh3d_cpu, p8)
 
-    call zonal_flux_adjust_gpu_ji(nx, ny, nz, ni, nj,                         &
-                                   i_start, i_end, j_start, j_end, nteams,     &
-                                   u, h_in, visc_rem,                           &
-                                   uhbt, uh_tot_0, duhdu_tot_0,                 &
-                                   du_max_CFL, du_min_CFL, do_I_in,             &
-                                   IareaT, IareaT_xp1, dy_Cu, IdxT, IdxT_xp1,  &
-                                   dt, tol_eta_base, tol_vel, .false.,          &
-                                   du_gpuji, uh3d_gpuji)
+    call zonal_flux_adjust_gpu_ji(nx, ny, nz, ni, nj, i_start, i_end, j_start, j_end, nteams, u, &
+      h_in, visc_rem, uhbt, uh_tot_0, duhdu_tot_0, du_max_CFL, du_min_CFL, do_I_in, IareaT, &
+      IareaT_xp1, dy_Cu, IdxT, IdxT_xp1, dt, tol_eta_base, tol_vel, .false., du_gpuji, uh3d_gpuji)
     !$omp taskwait
     call compare_2d('Test5 du ji ', du_gpuji,   du_cpu,   p9)
     call compare_3d('Test5 uh ji ', uh3d_gpuji, uh3d_cpu, p10)
@@ -1073,20 +920,17 @@ program test_repro
     write(*,*) '--- Timings ---'
 
     !$omp target enter data &
-    !$omp   map(to: u, h_in, visc_rem, dy_Cu, IdxT, IdxT_xp1, IareaT, IareaT_xp1, &
-    !$omp       uhbt, uh_tot_0, duhdu_tot_0, du_max_CFL, du_min_CFL, do_I_in) &
-    !$omp   map(alloc: uh_gpu, duhdu_gpu, du_gpu, uh3d_gpu, &
-    !$omp       du_gpuij, uh3d_gpuij, du_gpufu, uh3d_gpufu, du_gpuji, uh3d_gpuji)
+    !$omp  map(to: u, h_in, visc_rem, dy_Cu, IdxT, IdxT_xp1, IareaT, IareaT_xp1, uhbt, uh_tot_0, &
+    !$omp    duhdu_tot_0, du_max_CFL, du_min_CFL, do_I_in) &
+    !$omp  map(alloc: uh_gpu, duhdu_gpu, du_gpu, uh3d_gpu, du_gpuij, uh3d_gpuij, du_gpufu, &
+    !$omp    uh3d_gpufu, du_gpuji, uh3d_gpuji)
     !$omp taskwait
 
     write(*,*) 'Test 1 GPU (continuity):'
     do irun = 1, n_runs
       t0 = omp_get_wtime()
-      call run_continuity_gpu(nx, ny, nz, ni, nj,                    &
-                              i_start, i_end, j_start, j_end, nteams, &
-                              u, h_in, visc_rem,                       &
-                              dy_Cu, IdxT, IdxT_xp1, dt,               &
-                              uh_gpu, duhdu_gpu)
+      call run_continuity_gpu(nx, ny, nz, ni, nj, i_start, i_end, j_start, j_end, nteams, u, h_in, &
+        visc_rem, dy_Cu, IdxT, IdxT_xp1, dt, uh_gpu, duhdu_gpu)
       !$omp taskwait
       t1 = omp_get_wtime()
       times(irun) = t1 - t0
@@ -1096,11 +940,8 @@ program test_repro
     write(*,*) 'Test 1 CPU (continuity):'
     do irun = 1, n_runs
       t0 = omp_get_wtime()
-      call run_continuity_cpu(nx, ny, nz, ni, nj,                    &
-                              i_start, i_end, j_start, j_end,          &
-                              u, h_in, visc_rem,                       &
-                              dy_Cu, IdxT, IdxT_xp1, dt,               &
-                              uh_cpu, duhdu_cpu)
+      call run_continuity_cpu(nx, ny, nz, ni, nj, i_start, i_end, j_start, j_end, u, h_in, &
+        visc_rem, dy_Cu, IdxT, IdxT_xp1, dt, uh_cpu, duhdu_cpu)
       !$omp taskwait
       t1 = omp_get_wtime()
       times(irun) = t1 - t0
@@ -1110,14 +951,9 @@ program test_repro
     write(*,*) 'Test 2 GPU (ij teams, separate loops):'
     do irun = 1, n_runs
       t0 = omp_get_wtime()
-      call zonal_flux_adjust_gpu(nx, ny, nz, ni, nj,                         &
-                                  i_start, i_end, j_start, j_end, nteams,     &
-                                  u, h_in, visc_rem,                           &
-                                  uhbt, uh_tot_0, duhdu_tot_0,                 &
-                                  du_max_CFL, du_min_CFL, do_I_in,             &
-                                  IareaT, IareaT_xp1, dy_Cu, IdxT, IdxT_xp1,  &
-                                  dt, tol_eta_base, tol_vel, .false.,          &
-                                  du_gpu, uh3d_gpu)
+      call zonal_flux_adjust_gpu(nx, ny, nz, ni, nj, i_start, i_end, j_start, j_end, nteams, u, &
+        h_in, visc_rem, uhbt, uh_tot_0, duhdu_tot_0, du_max_CFL, du_min_CFL, do_I_in, IareaT, &
+        IareaT_xp1, dy_Cu, IdxT, IdxT_xp1, dt, tol_eta_base, tol_vel, .false., du_gpu, uh3d_gpu)
       !$omp taskwait
       t1 = omp_get_wtime()
       times(irun) = t1 - t0
@@ -1127,14 +963,9 @@ program test_repro
     write(*,*) 'Test 2 CPU:'
     do irun = 1, n_runs
       t0 = omp_get_wtime()
-      call zonal_flux_adjust_cpu(nx, ny, nz, ni, nj,                         &
-                                  i_start, i_end, j_start, j_end,             &
-                                  u, h_in, visc_rem,                           &
-                                  uhbt, uh_tot_0, duhdu_tot_0,                 &
-                                  du_max_CFL, du_min_CFL, do_I_in,             &
-                                  IareaT, IareaT_xp1, dy_Cu, IdxT, IdxT_xp1,  &
-                                  dt, tol_eta_base, tol_vel, .false.,          &
-                                  du_cpu, uh3d_cpu)
+      call zonal_flux_adjust_cpu(nx, ny, nz, ni, nj, i_start, i_end, j_start, j_end, u, h_in, &
+        visc_rem, uhbt, uh_tot_0, duhdu_tot_0, du_max_CFL, du_min_CFL, do_I_in, IareaT, &
+        IareaT_xp1, dy_Cu, IdxT, IdxT_xp1, dt, tol_eta_base, tol_vel, .false., du_cpu, uh3d_cpu)
       !$omp taskwait
       t1 = omp_get_wtime()
       times(irun) = t1 - t0
@@ -1144,14 +975,9 @@ program test_repro
     write(*,*) 'Test 3 GPU (ij-outer, scalar private):'
     do irun = 1, n_runs
       t0 = omp_get_wtime()
-      call zonal_flux_adjust_gpu_ij(nx, ny, nz, ni, nj,                         &
-                                     i_start, i_end, j_start, j_end, nteams,     &
-                                     u, h_in, visc_rem,                           &
-                                     uhbt, uh_tot_0, duhdu_tot_0,                 &
-                                     du_max_CFL, du_min_CFL, do_I_in,             &
-                                     IareaT, IareaT_xp1, dy_Cu, IdxT, IdxT_xp1,  &
-                                     dt, tol_eta_base, tol_vel, .false.,          &
-                                     du_gpuij, uh3d_gpuij)
+      call zonal_flux_adjust_gpu_ij(nx, ny, nz, ni, nj, i_start, i_end, j_start, j_end, nteams, u, &
+        h_in, visc_rem, uhbt, uh_tot_0, duhdu_tot_0, du_max_CFL, du_min_CFL, do_I_in, IareaT, &
+        IareaT_xp1, dy_Cu, IdxT, IdxT_xp1, dt, tol_eta_base, tol_vel, .false., du_gpuij, uh3d_gpuij)
       !$omp taskwait
       t1 = omp_get_wtime()
       times(irun) = t1 - t0
@@ -1161,14 +987,9 @@ program test_repro
     write(*,*) 'Test 4 GPU (fused-ij):'
     do irun = 1, n_runs
       t0 = omp_get_wtime()
-      call zonal_flux_adjust_gpu_fused(nx, ny, nz, ni, nj,                         &
-                                        i_start, i_end, j_start, j_end, nteams,     &
-                                        u, h_in, visc_rem,                           &
-                                        uhbt, uh_tot_0, duhdu_tot_0,                 &
-                                        du_max_CFL, du_min_CFL, do_I_in,             &
-                                        IareaT, IareaT_xp1, dy_Cu, IdxT, IdxT_xp1,  &
-                                        dt, tol_eta_base, tol_vel, .false.,          &
-                                        du_gpufu, uh3d_gpufu)
+      call zonal_flux_adjust_gpu_fused(nx, ny, nz, ni, nj, i_start, i_end, j_start, j_end, nteams, &
+        u, h_in, visc_rem, uhbt, uh_tot_0, duhdu_tot_0, du_max_CFL, du_min_CFL, do_I_in, IareaT, &
+        IareaT_xp1, dy_Cu, IdxT, IdxT_xp1, dt, tol_eta_base, tol_vel, .false., du_gpufu, uh3d_gpufu)
       !$omp taskwait
       t1 = omp_get_wtime()
       times(irun) = t1 - t0
@@ -1178,14 +999,9 @@ program test_repro
     write(*,*) 'Test 5 GPU (ji-outer, parallel i):'
     do irun = 1, n_runs
       t0 = omp_get_wtime()
-      call zonal_flux_adjust_gpu_ji(nx, ny, nz, ni, nj,                         &
-                                     i_start, i_end, j_start, j_end, nteams,     &
-                                     u, h_in, visc_rem,                           &
-                                     uhbt, uh_tot_0, duhdu_tot_0,                 &
-                                     du_max_CFL, du_min_CFL, do_I_in,             &
-                                     IareaT, IareaT_xp1, dy_Cu, IdxT, IdxT_xp1,  &
-                                     dt, tol_eta_base, tol_vel, .false.,          &
-                                     du_gpuji, uh3d_gpuji)
+      call zonal_flux_adjust_gpu_ji(nx, ny, nz, ni, nj, i_start, i_end, j_start, j_end, nteams, u, &
+        h_in, visc_rem, uhbt, uh_tot_0, duhdu_tot_0, du_max_CFL, du_min_CFL, do_I_in, IareaT, &
+        IareaT_xp1, dy_Cu, IdxT, IdxT_xp1, dt, tol_eta_base, tol_vel, .false., du_gpuji, uh3d_gpuji)
       !$omp taskwait
       t1 = omp_get_wtime()
       times(irun) = t1 - t0
@@ -1193,10 +1009,9 @@ program test_repro
     call print_timing_stats(times)
 
     !$omp target exit data &
-    !$omp   map(release: u, h_in, visc_rem, dy_Cu, IdxT, IdxT_xp1, IareaT, IareaT_xp1, &
-    !$omp       uhbt, uh_tot_0, duhdu_tot_0, du_max_CFL, du_min_CFL, do_I_in, &
-    !$omp       uh_gpu, duhdu_gpu, du_gpu, uh3d_gpu, &
-    !$omp       du_gpuij, uh3d_gpuij, du_gpufu, uh3d_gpufu, du_gpuji, uh3d_gpuji)
+    !$omp  map(release: u, h_in, visc_rem, dy_Cu, IdxT, IdxT_xp1, IareaT, IareaT_xp1, uhbt, &
+    !$omp    uh_tot_0, duhdu_tot_0, du_max_CFL, du_min_CFL, do_I_in, uh_gpu, duhdu_gpu, du_gpu, &
+    !$omp    uh3d_gpu, du_gpuij, uh3d_gpuij, du_gpufu, uh3d_gpufu, du_gpuji, uh3d_gpuji)
 
     deallocate(u, h_in, visc_rem, dy_Cu, IdxT, IdxT_xp1, IareaT, IareaT_xp1)
     deallocate(uh_gpu, duhdu_gpu, uh_cpu, duhdu_cpu)
