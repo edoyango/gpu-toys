@@ -18,7 +18,7 @@ EXE_CPU = col_norm_cpu
 FC       ?= amdflang
 GPU_ARCH ?= native
 
-GPU_FLAGS = -fopenmp                    \
+GPU_FLAGS ?= -fopenmp                    \
             --offload-arch=$(GPU_ARCH)  \
             -ffp-contract=off           \
             -O3

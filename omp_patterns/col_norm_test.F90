@@ -359,6 +359,9 @@ program test_col_norm
     write(*,*)
     write(*,*) '--- Timings ---'
 
+    !$omp target enter data map(to: wt, mask) &
+    !$omp&   map(alloc: wt_omp, wt_omp_ji, wt_dc, wt_dc_ji)
+
     write(*,*) 'OMP (ij teams, separate phases):'
     do irun = 1, n_runs
       t0 = omp_get_wtime()
@@ -408,6 +411,9 @@ program test_col_norm
       times(irun) = t1 - t0
     enddo
     call print_timing_stats(times)
+
+    !$omp target exit data map(release: wt, mask, &
+    !$omp&   wt_omp, wt_omp_ji, wt_dc, wt_dc_ji)
 
     deallocate(wt, mask, wt_omp, wt_omp_ji, wt_dc, wt_dc_ji, wt_cpu)
 

@@ -21,7 +21,7 @@ GPU_ARCH ?= native
 # OpenMP offload flags for AMD flang (ROCm LLVM).
 # Two equivalent spellings are shown; the shorter --offload-arch form
 # is preferred on ROCm ≥ 5.7.
-GPU_FLAGS = -fopenmp                              \
+GPU_FLAGS ?= -fopenmp                              \
             --offload-arch=$(GPU_ARCH)            \
 			-ffp-contract=off                     \
             -O3

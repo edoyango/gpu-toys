@@ -1065,6 +1065,12 @@ program test_repro
     write(*,*)
     write(*,*) '--- Timings ---'
 
+    !$omp target enter data &
+    !$omp&   map(to: u, h_in, visc_rem, dy_Cu, IdxT, IdxT_xp1, IareaT, IareaT_xp1, &
+    !$omp&       uhbt, uh_tot_0, duhdu_tot_0, du_max_CFL, du_min_CFL, do_I_in) &
+    !$omp&   map(alloc: uh_gpu, duhdu_gpu, du_gpu, uh3d_gpu, &
+    !$omp&       du_gpuij, uh3d_gpuij, du_gpufu, uh3d_gpufu, du_gpuji, uh3d_gpuji)
+
     write(*,*) 'Test 1 GPU (continuity):'
     do irun = 1, n_runs
       t0 = omp_get_wtime()
@@ -1177,6 +1183,12 @@ program test_repro
       times(irun) = t1 - t0
     enddo
     call print_timing_stats(times)
+
+    !$omp target exit data &
+    !$omp&   map(release: u, h_in, visc_rem, dy_Cu, IdxT, IdxT_xp1, IareaT, IareaT_xp1, &
+    !$omp&       uhbt, uh_tot_0, duhdu_tot_0, du_max_CFL, du_min_CFL, do_I_in, &
+    !$omp&       uh_gpu, duhdu_gpu, du_gpu, uh3d_gpu, &
+    !$omp&       du_gpuij, uh3d_gpuij, du_gpufu, uh3d_gpufu, du_gpuji, uh3d_gpuji)
 
     deallocate(u, h_in, visc_rem, dy_Cu, IdxT, IdxT_xp1, IareaT, IareaT_xp1)
     deallocate(uh_gpu, duhdu_gpu, uh_cpu, duhdu_cpu)

@@ -289,6 +289,9 @@ program test_av_rem
     write(*,*)
     write(*,*) '--- Timings ---'
 
+    !$omp target enter data map(to: frhatv, visc_rem_v) &
+    !$omp&   map(alloc: av_rem_omp, av_rem_omp_ji, av_rem_dc, av_rem_dc_ji)
+
     write(*,*) 'OMP (k serial in team, i parallel per k):'
     do irun = 1, n_runs
       t0 = omp_get_wtime()
@@ -338,6 +341,9 @@ program test_av_rem
       times(irun) = t1 - t0
     enddo
     call print_timing_stats(times)
+
+    !$omp target exit data map(release: frhatv, visc_rem_v, &
+    !$omp&   av_rem_omp, av_rem_omp_ji, av_rem_dc, av_rem_dc_ji)
 
     deallocate(frhatv, visc_rem_v)
     deallocate(av_rem_omp, av_rem_omp_ji, av_rem_dc, av_rem_dc_ji, av_rem_cpu)
