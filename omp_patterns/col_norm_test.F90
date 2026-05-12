@@ -253,6 +253,26 @@ contains
     endif
   end subroutine compare_3d
 
+  subroutine print_timing_stats(times)
+    real(dp), intent(in) :: times(:)
+    real(dp) :: sorted(size(times)), tmp, tmin, tmax, tavg, tmed
+    integer  :: n, i, j
+    n = size(times)
+    sorted = times
+    do i = 2, n
+      tmp = sorted(i) ; j = i - 1
+      do while (j >= 1 .and. sorted(j) > tmp)
+        sorted(j+1) = sorted(j) ; j = j - 1
+      enddo
+      sorted(j+1) = tmp
+    enddo
+    tmin = sorted(1)    ; tmax = sorted(n)
+    tavg = sum(times) / real(n, dp)
+    tmed = sorted((n+1)/2)
+    write(*,'(A,F10.6,A,F10.6,A,F10.6,A,F10.6,A)') &
+      '    min=', tmin, '  max=', tmax, '  avg=', tavg, '  med=', tmed, ' s'
+  end subroutine print_timing_stats
+
 end module col_norm_mod
 
 
@@ -275,6 +295,7 @@ program test_col_norm
 
   integer  :: ni, nj, nteams, I, j, k, isize, irun
   real(dp) :: t0, t1
+  real(dp) :: times(n_runs)
   logical  :: p1, p2, p3, p4, all_pass
 
   do isize = 1, n_sizes
@@ -344,8 +365,9 @@ program test_col_norm
       call run_colnorm_omp(ni, nj, nz, nteams, wt, mask, wt_omp)
       !$omp taskwait
       t1 = omp_get_wtime()
-      write(*,'(A,I0,A,F10.6,A)') '    run ', irun, ': ', t1-t0, ' s'
+      times(irun) = t1 - t0
     enddo
+    call print_timing_stats(times)
 
     write(*,*) 'OMP ji (j teams, parallel i, serial k per team):'
     do irun = 1, n_runs
@@ -353,8 +375,9 @@ program test_col_norm
       call run_colnorm_omp_ji(ni, nj, nz, wt, mask, wt_omp_ji)
       !$omp taskwait
       t1 = omp_get_wtime()
-      write(*,'(A,I0,A,F10.6,A)') '    run ', irun, ': ', t1-t0, ' s'
+      times(irun) = t1 - t0
     enddo
+    call print_timing_stats(times)
 
     write(*,*) 'do concurrent (separate phases, serial k outer in phase 2):'
     do irun = 1, n_runs
@@ -362,8 +385,9 @@ program test_col_norm
       call run_colnorm_dc(ni, nj, nz, wt, mask, wt_dc)
       !$omp taskwait
       t1 = omp_get_wtime()
-      write(*,'(A,I0,A,F10.6,A)') '    run ', irun, ': ', t1-t0, ' s'
+      times(irun) = t1 - t0
     enddo
+    call print_timing_stats(times)
 
     write(*,*) 'do concurrent ji (phases 1-3 fused, serial k within each (j,i)):'
     do irun = 1, n_runs
@@ -371,8 +395,9 @@ program test_col_norm
       call run_colnorm_dc_ji(ni, nj, nz, wt, mask, wt_dc_ji)
       !$omp taskwait
       t1 = omp_get_wtime()
-      write(*,'(A,I0,A,F10.6,A)') '    run ', irun, ': ', t1-t0, ' s'
+      times(irun) = t1 - t0
     enddo
+    call print_timing_stats(times)
 
     write(*,*) 'CPU reference:'
     do irun = 1, n_runs
@@ -380,8 +405,9 @@ program test_col_norm
       call run_colnorm_cpu(ni, nj, nz, wt, mask, wt_cpu)
       !$omp taskwait
       t1 = omp_get_wtime()
-      write(*,'(A,I0,A,F10.6,A)') '    run ', irun, ': ', t1-t0, ' s'
+      times(irun) = t1 - t0
     enddo
+    call print_timing_stats(times)
 
     deallocate(wt, mask, wt_omp, wt_omp_ji, wt_dc, wt_dc_ji, wt_cpu)
 

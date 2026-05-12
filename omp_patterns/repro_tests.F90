@@ -854,6 +854,26 @@ contains
     endif
   end subroutine compare_2d
 
+  subroutine print_timing_stats(times)
+    real(dp), intent(in) :: times(:)
+    real(dp) :: sorted(size(times)), tmp, tmin, tmax, tavg, tmed
+    integer  :: n, i, j
+    n = size(times)
+    sorted = times
+    do i = 2, n
+      tmp = sorted(i) ; j = i - 1
+      do while (j >= 1 .and. sorted(j) > tmp)
+        sorted(j+1) = sorted(j) ; j = j - 1
+      enddo
+      sorted(j+1) = tmp
+    enddo
+    tmin = sorted(1)    ; tmax = sorted(n)
+    tavg = sum(times) / real(n, dp)
+    tmed = sorted((n+1)/2)
+    write(*,'(A,F10.6,A,F10.6,A,F10.6,A,F10.6,A)') &
+      '    min=', tmin, '  max=', tmax, '  avg=', tavg, '  med=', tmed, ' s'
+  end subroutine print_timing_stats
+
 end module repro_mod
 
 
@@ -891,6 +911,7 @@ program test_repro
   integer  :: i_start, i_end, j_start, j_end
   integer  :: i, j, k, ii, jj, isize, irun
   real(dp) :: tmp_uh, tmp_duhdu, t0, t1
+  real(dp) :: times(n_runs)
   logical  :: p1, p2, p3, p4, p5, p6, p7, p8, p9, p10, all_pass
 
   do isize = 1, n_sizes
@@ -1054,8 +1075,9 @@ program test_repro
                               uh_gpu, duhdu_gpu)
       !$omp taskwait
       t1 = omp_get_wtime()
-      write(*,'(A,I0,A,F10.6,A)') '    run ', irun, ': ', t1-t0, ' s'
+      times(irun) = t1 - t0
     enddo
+    call print_timing_stats(times)
 
     write(*,*) 'Test 1 CPU (continuity):'
     do irun = 1, n_runs
@@ -1067,8 +1089,9 @@ program test_repro
                               uh_cpu, duhdu_cpu)
       !$omp taskwait
       t1 = omp_get_wtime()
-      write(*,'(A,I0,A,F10.6,A)') '    run ', irun, ': ', t1-t0, ' s'
+      times(irun) = t1 - t0
     enddo
+    call print_timing_stats(times)
 
     write(*,*) 'Test 2 GPU (ij teams, separate loops):'
     do irun = 1, n_runs
@@ -1083,8 +1106,9 @@ program test_repro
                                   du_gpu, uh3d_gpu)
       !$omp taskwait
       t1 = omp_get_wtime()
-      write(*,'(A,I0,A,F10.6,A)') '    run ', irun, ': ', t1-t0, ' s'
+      times(irun) = t1 - t0
     enddo
+    call print_timing_stats(times)
 
     write(*,*) 'Test 2 CPU:'
     do irun = 1, n_runs
@@ -1099,8 +1123,9 @@ program test_repro
                                   du_cpu, uh3d_cpu)
       !$omp taskwait
       t1 = omp_get_wtime()
-      write(*,'(A,I0,A,F10.6,A)') '    run ', irun, ': ', t1-t0, ' s'
+      times(irun) = t1 - t0
     enddo
+    call print_timing_stats(times)
 
     write(*,*) 'Test 3 GPU (ij-outer, scalar private):'
     do irun = 1, n_runs
@@ -1115,8 +1140,9 @@ program test_repro
                                      du_gpuij, uh3d_gpuij)
       !$omp taskwait
       t1 = omp_get_wtime()
-      write(*,'(A,I0,A,F10.6,A)') '    run ', irun, ': ', t1-t0, ' s'
+      times(irun) = t1 - t0
     enddo
+    call print_timing_stats(times)
 
     write(*,*) 'Test 4 GPU (fused-ij):'
     do irun = 1, n_runs
@@ -1131,8 +1157,9 @@ program test_repro
                                         du_gpufu, uh3d_gpufu)
       !$omp taskwait
       t1 = omp_get_wtime()
-      write(*,'(A,I0,A,F10.6,A)') '    run ', irun, ': ', t1-t0, ' s'
+      times(irun) = t1 - t0
     enddo
+    call print_timing_stats(times)
 
     write(*,*) 'Test 5 GPU (ji-outer, parallel i):'
     do irun = 1, n_runs
@@ -1147,8 +1174,9 @@ program test_repro
                                      du_gpuji, uh3d_gpuji)
       !$omp taskwait
       t1 = omp_get_wtime()
-      write(*,'(A,I0,A,F10.6,A)') '    run ', irun, ': ', t1-t0, ' s'
+      times(irun) = t1 - t0
     enddo
+    call print_timing_stats(times)
 
     deallocate(u, h_in, visc_rem, dy_Cu, IdxT, IdxT_xp1, IareaT, IareaT_xp1)
     deallocate(uh_gpu, duhdu_gpu, uh_cpu, duhdu_cpu)
