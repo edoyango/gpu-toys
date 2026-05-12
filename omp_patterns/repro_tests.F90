@@ -9,6 +9,16 @@
 !   single !$omp target teams enclosing a sequential Newton/bisection
 !   do-itt loop with multiple !$omp distribute parallel do nests inside.
 
+#ifdef LOOP
+#define TEAMS_OUTER_LOOP loop
+#define PARALLEL_INNER_LOOP loop bind(parallel)
+#define COMBINED_LOOP loop bind(teams)
+#else
+#define TEAMS_OUTER_LOOP distribute
+#define PARALLEL_INNER_LOOP parallel do
+#define COMBINED_LOOP TEAMS_OUTER_LOOP PARALLEL_INNER_LOOP
+#endif
+
 module repro_mod
   implicit none
   integer, parameter :: dp       = kind(1.0d0)
@@ -68,16 +78,16 @@ contains
     integer  :: i, j, k, ii, jj
 
     !$omp target teams num_teams(nteams)                          &
-    !$omp& map(to: u, h_in, visc_rem_u, dy_Cu, IdxT, IdxT_xp1)  &
-    !$omp& map(from: uh_t, duhdu_out)                             &
-    !$omp& map(alloc: visc_rem)
+    !$omp map(to: u, h_in, visc_rem_u, dy_Cu, IdxT, IdxT_xp1)  &
+    !$omp map(from: uh_t, duhdu_out)                             &
+    !$omp map(alloc: visc_rem)
     do k = 1, nz
-      !$omp distribute parallel do collapse(2) private(ii, jj)
+      !$omp COMBINED_LOOP collapse(2) private(ii, jj)
       do j = j_start, j_end ; do i = i_start, i_end
         ii = i - i_start + 1 ; jj = j - j_start + 1
         visc_rem(ii,jj,k) = visc_rem_u(i,j,k)
       enddo ; enddo
-      !$omp distribute parallel do collapse(2) private(ii, jj)
+      !$omp COMBINED_LOOP collapse(2) private(ii, jj)
       do j = j_start, j_end ; do i = i_start, i_end
         ii = i - i_start + 1 ; jj = j - j_start + 1
         call flux_elem(u(i,j,k), h_in(i,j,k), h_in(i+1,j,k), visc_rem(ii,jj,k), &
@@ -165,11 +175,11 @@ contains
     real(dp) :: tol_eta, u_new, duhdu_loc, ddu, du_prev
 
     !$omp target enter data &
-    !$omp&   map(alloc: uh_err, uh_err_best, duhdu_tot, du_min, du_max, do_I)
+    !$omp   map(alloc: uh_err, uh_err_best, duhdu_tot, du_min, du_max, do_I)
 
-    !$omp target teams distribute parallel do collapse(2) private(ii, jj) &
-    !$omp&   map(to: do_I_in, du_max_CFL, du_min_CFL, uh_tot_0, uhbt, duhdu_tot_0) &
-    !$omp&   map(from: du)
+    !$omp target teams COMBINED_LOOP collapse(2) &
+    !$omp   map(to: do_I_in, du_max_CFL, du_min_CFL, uh_tot_0, uhbt, duhdu_tot_0) &
+    !$omp   map(from: du)
     do j = j_start, j_end ; do i = i_start, i_end
       ii = i - i_start + 1 ; jj = j - j_start + 1
       du(ii,jj)          = 0.0_dp  ;  do_I(ii,jj)      = do_I_in(ii,jj)
@@ -181,10 +191,10 @@ contains
     enddo ; enddo
 
     !$omp target teams private(k,itt,tol_eta)                                                             &
-    !$omp&   map(to: u, h_in, visc_rem, uhbt, uh_tot_0, duhdu_tot_0,        &
-    !$omp&       du_max_CFL, du_min_CFL, do_I_in, IareaT, IareaT_xp1,       &
-    !$omp&       dy_Cu, IdxT, IdxT_xp1)                                      &
-    !$omp&   map(tofrom: du) map(from: uh_3d)
+    !$omp   map(to: u, h_in, visc_rem, uhbt, uh_tot_0, duhdu_tot_0,        &
+    !$omp       du_max_CFL, du_min_CFL, do_I_in, IareaT, IareaT_xp1,       &
+    !$omp       dy_Cu, IdxT, IdxT_xp1)                                      &
+    !$omp   map(tofrom: du) map(from: uh_3d)
 
     do itt = 1, max_itts
       select case (itt)
@@ -194,7 +204,7 @@ contains
         case default ; tol_eta = tol_eta_base
       end select
 
-      !$omp distribute parallel do collapse(2) private(ii, jj)
+      !$omp COMBINED_LOOP collapse(2) private(ii,jj)
       do j = j_start, j_end ; do i = i_start, i_end
         ii = i - i_start + 1 ; jj = j - j_start + 1
         if     (uh_err(ii,jj) > 0.0_dp) then ; du_max(ii,jj) = du(ii,jj)
@@ -203,7 +213,7 @@ contains
         endif
       enddo ; enddo
 
-      !$omp distribute parallel do collapse(2) private(ii, jj, ddu, du_prev)
+      !$omp COMBINED_LOOP collapse(2) private(ii, jj, ddu, du_prev)
       do j = j_start, j_end ; do i = i_start, i_end
         ii = i - i_start + 1 ; jj = j - j_start + 1
         if (do_I(ii,jj)) then
@@ -235,7 +245,7 @@ contains
         endif
       enddo ; enddo
 
-      !$omp distribute parallel do collapse(2) private(ii, jj)
+      !$omp COMBINED_LOOP collapse(2) private(ii, jj)
       do j = j_start, j_end ; do i = i_start, i_end
         ii = i - i_start + 1 ; jj = j - j_start + 1
         uh_err(ii,jj)    = -uhbt(ii,jj)
@@ -243,7 +253,7 @@ contains
       enddo ; enddo
 
       do k = 1, nz
-        !$omp distribute parallel do collapse(2) private(ii, jj, u_new, duhdu_loc)
+        !$omp COMBINED_LOOP collapse(2) private(ii, jj, u_new, duhdu_loc)
         do j = j_start, j_end ; do i = i_start, i_end
           ii = i - i_start + 1 ; jj = j - j_start + 1
           if (do_I(ii,jj)) then
@@ -257,7 +267,7 @@ contains
         enddo ; enddo
       enddo
 
-      !$omp distribute parallel do collapse(2) private(ii, jj)
+      !$omp COMBINED_LOOP collapse(2) private(ii, jj)
       do j = j_start, j_end ; do i = i_start, i_end
         ii = i - i_start + 1 ; jj = j - j_start + 1
         uh_err_best(ii,jj) = min(uh_err_best(ii,jj), abs(uh_err(ii,jj)))
@@ -268,7 +278,7 @@ contains
     !$omp end target teams
 
     !$omp target exit data &
-    !$omp&   map(release: uh_err, uh_err_best, duhdu_tot, du_min, du_max, do_I)
+    !$omp   map(release: uh_err, uh_err_best, duhdu_tot, du_min, du_max, do_I)
   end subroutine zonal_flux_adjust_gpu
 
   ! CPU reference: identical logic, no OpenMP, domore early-exit enabled.
@@ -427,15 +437,14 @@ contains
     real(dp) :: tol_eta, u_new, duhdu_loc, ddu, du_prev
     logical  :: do_I_loc
 
-    !$omp target teams num_teams(nteams)                                        &
-    !$omp&   map(to: u, h_in, visc_rem, uhbt, uh_tot_0, duhdu_tot_0,            &
-    !$omp&       du_max_CFL, du_min_CFL, do_I_in, IareaT, IareaT_xp1,           &
-    !$omp&       dy_Cu, IdxT, IdxT_xp1)                                          &
-    !$omp&   map(from: du, uh_3d)
-    !$omp distribute parallel do collapse(2)                                      &
-    !$omp&   private(ii, jj, uh_err, uh_err_best, duhdu_tot_loc,                 &
-    !$omp&           du_min_loc, du_max_loc, du_loc, do_I_loc,                   &
-    !$omp&           tol_eta, u_new, duhdu_loc, ddu, du_prev)
+    !$omp target teams COMBINED_LOOP collapse(2) num_teams(nteams)                                        &
+    !$omp   map(to: u, h_in, visc_rem, uhbt, uh_tot_0, duhdu_tot_0,            &
+    !$omp       du_max_CFL, du_min_CFL, do_I_in, IareaT, IareaT_xp1,           &
+    !$omp       dy_Cu, IdxT, IdxT_xp1)                                          &
+    !$omp   map(from: du, uh_3d) &
+    !$omp   private(ii, jj, uh_err, uh_err_best, duhdu_tot_loc,                 &
+    !$omp           du_min_loc, du_max_loc, du_loc, do_I_loc,                   &
+    !$omp           tol_eta, u_new, duhdu_loc, ddu, du_prev)
     do j = j_start, j_end ; do i = i_start, i_end
       ii = i - i_start + 1 ; jj = j - j_start + 1
 
@@ -507,7 +516,6 @@ contains
       du(ii,jj) = du_loc
 
     enddo ; enddo
-    !$omp end target teams
 
   end subroutine zonal_flux_adjust_gpu_ij
 
@@ -551,15 +559,15 @@ contains
     real(dp) :: tol_eta, u_new, duhdu_loc, ddu, du_prev
 
     !$omp target enter data &
-    !$omp&   map(alloc: uh_err, uh_err_best, duhdu_tot, du_min, du_max, do_I)
+    !$omp   map(alloc: uh_err, uh_err_best, duhdu_tot, du_min, du_max, do_I)
 
     !$omp target teams private(k,itt,tol_eta)                         &
-    !$omp&   map(to: u, h_in, visc_rem, uhbt, uh_tot_0, duhdu_tot_0,            &
-    !$omp&       du_max_CFL, du_min_CFL, do_I_in, IareaT, IareaT_xp1,           &
-    !$omp&       dy_Cu, IdxT, IdxT_xp1)                                          &
-    !$omp&   map(from: du, uh_3d)
+    !$omp   map(to: u, h_in, visc_rem, uhbt, uh_tot_0, duhdu_tot_0,            &
+    !$omp       du_max_CFL, du_min_CFL, do_I_in, IareaT, IareaT_xp1,           &
+    !$omp       dy_Cu, IdxT, IdxT_xp1)                                          &
+    !$omp   map(from: du, uh_3d)
 
-    !$omp distribute parallel do collapse(2) private(ii, jj)
+    !$omp COMBINED_LOOP collapse(2) private(ii, jj)
     do j = j_start, j_end ; do i = i_start, i_end
       ii = i - i_start + 1 ; jj = j - j_start + 1
       du(ii,jj)          = 0.0_dp  ;  do_I(ii,jj)      = do_I_in(ii,jj)
@@ -578,8 +586,7 @@ contains
         case default ; tol_eta = tol_eta_base
       end select
 
-      !$omp distribute parallel do collapse(2) &
-      !$omp& private(ii, jj, ddu, du_prev, u_new, duhdu_loc)
+      !$omp COMBINED_LOOP collapse(2) private(ii, jj, ddu, du_prev, u_new, duhdu_loc)
       do j = j_start, j_end ; do i = i_start, i_end
         ii = i - i_start + 1 ; jj = j - j_start + 1
 
@@ -644,7 +651,7 @@ contains
     !$omp end target teams
 
     !$omp target exit data &
-    !$omp&   map(release: uh_err, uh_err_best, duhdu_tot, du_min, du_max, do_I)
+    !$omp   map(release: uh_err, uh_err_best, duhdu_tot, du_min, du_max, do_I)
   end subroutine zonal_flux_adjust_gpu_fused
 
   ! ================================================================== !
@@ -688,17 +695,17 @@ contains
     real(dp) :: tol_eta, u_new, duhdu_loc, ddu, du_prev
 
     !$omp target enter data &
-    !$omp&   map(alloc: uh_err, uh_err_best, duhdu_tot, du_min, du_max, do_I)
+    !$omp   map(alloc: uh_err, uh_err_best, duhdu_tot, du_min, du_max, do_I)
 
-    !$omp target teams loop num_teams(nj)                               &
-    !$omp&   map(to: u, h_in, visc_rem, uhbt, uh_tot_0, duhdu_tot_0,         &
-    !$omp&       du_max_CFL, du_min_CFL, do_I_in, IareaT, IareaT_xp1,        &
-    !$omp&       dy_Cu, IdxT, IdxT_xp1)                                       &
-    !$omp&   map(from: du, uh_3d)
+    !$omp target teams TEAMS_OUTER_LOOP num_teams(nj)                               &
+    !$omp   map(to: u, h_in, visc_rem, uhbt, uh_tot_0, duhdu_tot_0,         &
+    !$omp       du_max_CFL, du_min_CFL, do_I_in, IareaT, IareaT_xp1,        &
+    !$omp       dy_Cu, IdxT, IdxT_xp1)                                       &
+    !$omp   map(from: du, uh_3d)
     do j = j_start, j_end
       jj = j - j_start + 1
 
-      !$omp loop bind(parallel) private(i, ii)
+      !$omp PARALLEL_INNER_LOOP private(i, ii)
       do i = i_start, i_end
         ii = i - i_start + 1
         du(ii,jj)          = 0.0_dp  ;  do_I(ii,jj)      = do_I_in(ii,jj)
@@ -717,7 +724,7 @@ contains
           case default ; tol_eta = tol_eta_base
         end select
 
-        !$omp loop bind(parallel) private(i, ii)
+        !$omp PARALLEL_INNER_LOOP private(i, ii)
         do i = i_start, i_end
           ii = i - i_start + 1
           if     (uh_err(ii,jj) > 0.0_dp) then ; du_max(ii,jj) = du(ii,jj)
@@ -726,7 +733,7 @@ contains
           endif
         enddo
 
-        !$omp loop bind(parallel) private(i, ii, ddu, du_prev)
+        !$omp PARALLEL_INNER_LOOP private(i, ii, ddu, du_prev)
         do i = i_start, i_end
           ii = i - i_start + 1
           if (do_I(ii,jj)) then
@@ -758,7 +765,7 @@ contains
           endif
         enddo
 
-        !$omp loop bind(parallel) private(i, ii)
+        !$omp PARALLEL_INNER_LOOP private(i, ii)
         do i = i_start, i_end
           ii = i - i_start + 1
           uh_err(ii,jj)    = -uhbt(ii,jj)
@@ -766,7 +773,7 @@ contains
         enddo
 
         do k = 1, nz
-          !$omp loop bind(parallel) private(i, ii, u_new, duhdu_loc)
+          !$omp PARALLEL_INNER_LOOP private(i, ii, u_new, duhdu_loc)
           do i = i_start, i_end
             ii = i - i_start + 1
             if (do_I(ii,jj)) then
@@ -780,7 +787,7 @@ contains
           enddo
         enddo
 
-        !$omp loop bind(parallel) private(i, ii)
+        !$omp PARALLEL_INNER_LOOP private(i, ii)
         do i = i_start, i_end
           ii = i - i_start + 1
           uh_err_best(ii,jj) = min(uh_err_best(ii,jj), abs(uh_err(ii,jj)))
@@ -791,7 +798,7 @@ contains
     enddo
 
     !$omp target exit data &
-    !$omp&   map(release: uh_err, uh_err_best, duhdu_tot, du_min, du_max, do_I)
+    !$omp   map(release: uh_err, uh_err_best, duhdu_tot, du_min, du_max, do_I)
   end subroutine zonal_flux_adjust_gpu_ji
 
   ! ================================================================== !
@@ -1066,10 +1073,11 @@ program test_repro
     write(*,*) '--- Timings ---'
 
     !$omp target enter data &
-    !$omp&   map(to: u, h_in, visc_rem, dy_Cu, IdxT, IdxT_xp1, IareaT, IareaT_xp1, &
-    !$omp&       uhbt, uh_tot_0, duhdu_tot_0, du_max_CFL, du_min_CFL, do_I_in) &
-    !$omp&   map(alloc: uh_gpu, duhdu_gpu, du_gpu, uh3d_gpu, &
-    !$omp&       du_gpuij, uh3d_gpuij, du_gpufu, uh3d_gpufu, du_gpuji, uh3d_gpuji)
+    !$omp   map(to: u, h_in, visc_rem, dy_Cu, IdxT, IdxT_xp1, IareaT, IareaT_xp1, &
+    !$omp       uhbt, uh_tot_0, duhdu_tot_0, du_max_CFL, du_min_CFL, do_I_in) &
+    !$omp   map(alloc: uh_gpu, duhdu_gpu, du_gpu, uh3d_gpu, &
+    !$omp       du_gpuij, uh3d_gpuij, du_gpufu, uh3d_gpufu, du_gpuji, uh3d_gpuji)
+    !$omp taskwait
 
     write(*,*) 'Test 1 GPU (continuity):'
     do irun = 1, n_runs
@@ -1185,10 +1193,10 @@ program test_repro
     call print_timing_stats(times)
 
     !$omp target exit data &
-    !$omp&   map(release: u, h_in, visc_rem, dy_Cu, IdxT, IdxT_xp1, IareaT, IareaT_xp1, &
-    !$omp&       uhbt, uh_tot_0, duhdu_tot_0, du_max_CFL, du_min_CFL, do_I_in, &
-    !$omp&       uh_gpu, duhdu_gpu, du_gpu, uh3d_gpu, &
-    !$omp&       du_gpuij, uh3d_gpuij, du_gpufu, uh3d_gpufu, du_gpuji, uh3d_gpuji)
+    !$omp   map(release: u, h_in, visc_rem, dy_Cu, IdxT, IdxT_xp1, IareaT, IareaT_xp1, &
+    !$omp       uhbt, uh_tot_0, duhdu_tot_0, du_max_CFL, du_min_CFL, do_I_in, &
+    !$omp       uh_gpu, duhdu_gpu, du_gpu, uh3d_gpu, &
+    !$omp       du_gpuij, uh3d_gpuij, du_gpufu, uh3d_gpufu, du_gpuji, uh3d_gpuji)
 
     deallocate(u, h_in, visc_rem, dy_Cu, IdxT, IdxT_xp1, IareaT, IareaT_xp1)
     deallocate(uh_gpu, duhdu_gpu, uh_cpu, duhdu_cpu)
