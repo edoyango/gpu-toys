@@ -770,8 +770,8 @@ program test_repro
   implicit none
 
   integer,  parameter :: nz           = 100
-  integer,  parameter :: n_sizes      = 2
-  integer,  parameter :: all_sizes(n_sizes) = [32, 64]
+  integer,  parameter :: n_sizes      = 5
+  integer,  parameter :: all_sizes(n_sizes) = [32, 64, 128, 256, 512]
   real(dp), parameter :: dt           = 900.0_dp
   real(dp), parameter :: tol_eta_base = 1.0e-10_dp
   real(dp), parameter :: tol_vel      = 1.0e-10_dp

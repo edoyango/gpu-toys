@@ -232,8 +232,8 @@ program test_col_norm
   implicit none
 
   integer,  parameter :: nz           = 20
-  integer,  parameter :: n_sizes      = 4
-  integer,  parameter :: all_sizes(n_sizes) = [32, 64, 128, 256]
+  integer,  parameter :: n_sizes      = 5
+  integer,  parameter :: all_sizes(n_sizes) = [32, 64, 128, 256, 512]
 
   real(dp), allocatable :: wt(:,:,:)
   real(dp), allocatable :: mask(:,:)
