@@ -15,8 +15,8 @@
 ! Five variants:
 !   run_av_rem_omp    – !$omp target teams distribute over J, k serial in
 !                       team, parallel do over i inside each k
-!   run_av_rem_omp_ji – !$omp target teams distribute over J (num_teams=ny),
-!                       parallel do over i, serial k within each thread
+!   run_av_rem_omp_ji – !$omp target teams distribute parallel do over (J,I)
+!                       using nteams, serial k within each thread
 !   run_av_rem_dc     – do concurrent, k serial in outer-j body, i concurrent
 !                       per k; GPU offload via compiler flag
 !   run_av_rem_dc_ji  – fused do concurrent(j,i) for init and accumulation,
@@ -25,6 +25,14 @@
 !
 ! Comparisons: each GPU/DC variant vs CPU.
 ! Timing: multiple problem sizes (32..256), 5 timed runs each.
+
+#ifndef WAVEFRONT
+#define WAVEFRONT 64
+#endif
+
+#ifndef DEFAULT_BLOCK_SIZE
+#define DEFAULT_BLOCK_SIZE 256
+#endif
 
 module av_rem_mod
   use test_utils_mod, only: dp
@@ -37,18 +45,20 @@ contains
   !  Outer J distributed across teams (thread_limit(1) → serial inner  !
   !  loops per team), mirroring the do concurrent (J) outer structure. !
   ! ------------------------------------------------------------------ !
-  subroutine run_av_rem_omp(nx, ny, nz, nteams, frhatv, visc_rem_v, av_rem_v)
-    integer,  intent(in)  :: nx, ny, nz, nteams
+  subroutine run_av_rem_omp(nx, ny, nz, frhatv, visc_rem_v, av_rem_v)
+    integer,  intent(in)  :: nx, ny, nz
     real(dp), intent(in)  :: frhatv(nx, ny, nz)
     real(dp), intent(in)  :: visc_rem_v(nx, ny, nz)
     real(dp), intent(out) :: av_rem_v(0:nx+1, ny)
-    integer :: i, j, k
+    integer :: i, j, k, nthreads
 
-    !$omp target teams distribute &
+    nthreads = int((nx + WAVEFRONT-1)/WAVEFRONT) * WAVEFRONT
+
+    !$omp target teams distribute num_teams(ny) thread_limit(nthreads) &
     !$omp&   map(to: frhatv, visc_rem_v) map(from: av_rem_v)
     do j = 1, ny
       !$omp parallel do
-      do i = 0, nx+1
+      do i = 1, nx
         av_rem_v(i,j) = 0.0_dp
       enddo
       do k = 1, nz
@@ -90,14 +100,14 @@ contains
   !  parallelised within the team, k serial within each i-thread.     !
   !  Loop order: distribute(j) → parallel(i) → serial k.             !
   ! ------------------------------------------------------------------ !
-  subroutine run_av_rem_omp_ji(nx, ny, nz, frhatv, visc_rem_v, av_rem_v)
-    integer,  intent(in)  :: nx, ny, nz
+  subroutine run_av_rem_omp_ji(nx, ny, nz, nteams, frhatv, visc_rem_v, av_rem_v)
+    integer,  intent(in)  :: nx, ny, nz, nteams
     real(dp), intent(in)  :: frhatv(nx, ny, nz)
     real(dp), intent(in)  :: visc_rem_v(nx, ny, nz)
     real(dp), intent(out) :: av_rem_v(0:nx+1, ny)
     integer :: i, j, k
 
-    !$omp target teams distribute parallel do collapse(2) &
+    !$omp target teams distribute parallel do collapse(2) num_teams(nteams) &
     !$omp&   map(to: frhatv, visc_rem_v) map(from: av_rem_v)
     do j = 1, ny
       do i = 1, nx
@@ -179,7 +189,7 @@ program test_av_rem
 
   do isize = 1, n_sizes
     nx = all_sizes(isize) ; ny = all_sizes(isize)
-    nteams = (nx * ny + 127) / 128
+    nteams = (nx * ny + DEFAULT_BLOCK_SIZE-1) / DEFAULT_BLOCK_SIZE
 
     write(*,*)
     write(*,'(A)') '========================================================'
@@ -205,11 +215,11 @@ program test_av_rem
 
     call run_av_rem_cpu(nx, ny, nz, frhatv, visc_rem_v, av_rem_cpu)
 
-    call run_av_rem_omp(nx, ny, nz, nteams, frhatv, visc_rem_v, av_rem_omp)
+    call run_av_rem_omp(nx, ny, nz, frhatv, visc_rem_v, av_rem_omp)
     !$omp taskwait
     call compare_2d('omp    |cpu', av_rem_omp,    av_rem_cpu, p1)
 
-    call run_av_rem_omp_ji(nx, ny, nz, frhatv, visc_rem_v, av_rem_omp_ji)
+    call run_av_rem_omp_ji(nx, ny, nz, nteams, frhatv, visc_rem_v, av_rem_omp_ji)
     !$omp taskwait
     call compare_2d('omp_ji |cpu', av_rem_omp_ji, av_rem_cpu, p2)
 
@@ -240,7 +250,7 @@ program test_av_rem
     write(*,*) 'OMP (k serial in team, i parallel per k):'
     do irun = 1, n_runs
       t0 = omp_get_wtime()
-      call run_av_rem_omp(nx, ny, nz, nteams, frhatv, visc_rem_v, av_rem_omp)
+      call run_av_rem_omp(nx, ny, nz, frhatv, visc_rem_v, av_rem_omp)
       !$omp taskwait
       t1 = omp_get_wtime()
       times(irun) = t1 - t0
@@ -250,7 +260,7 @@ program test_av_rem
     write(*,*) 'OMP ji (i parallel in team, k serial per thread):'
     do irun = 1, n_runs
       t0 = omp_get_wtime()
-      call run_av_rem_omp_ji(nx, ny, nz, frhatv, visc_rem_v, av_rem_omp_ji)
+      call run_av_rem_omp_ji(nx, ny, nz, nteams, frhatv, visc_rem_v, av_rem_omp_ji)
       !$omp taskwait
       t1 = omp_get_wtime()
       times(irun) = t1 - t0
