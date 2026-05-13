@@ -12,23 +12,13 @@
 !   Phase 4 – broadcast 2-D result back to 3-D:
 !               wt_out(I,j,k) = wt(I,j,k) * col_sum(I,j)
 !
-! Four GPU variants + one CPU reference:
-!   run_colnorm_omp    – single !$omp target teams region; separate
-!                        distribute parallel do for each phase; serial k
-!                        loop in phase 2
-!   run_colnorm_omp_ji – !$omp target teams loop num_teams(nj); one team
-!                        per j-row; phases executed in sequence within each
-!                        team; parallel do over i per phase, serial k
-!   run_colnorm_dc     – separate do concurrent construct per phase;
-!                        serial k outer with do concurrent(j,i) inner in
-!                        phase 2; do concurrent filter mask in phase 3
-!   run_colnorm_dc_ji  – phases 1-3 fused into do concurrent(j,i) with
-!                        serial k accumulation and conditional invert inside
-!                        each (j,i) iteration; phase 4 separate
-!                        do concurrent(k,j,i)
+! One GPU variant + one CPU reference:
+!   run_colnorm_omp    – separate !$omp target loop per phase; serial k
+!                        outer with parallel ij inner in phase 2; fused
+!                        kji target loop in phase 4
 !   run_colnorm_cpu    – plain do loops, CPU reference
 !
-! Comparisons: each GPU/DC variant vs CPU.
+! Comparisons: GPU variant vs CPU.
 ! Timing: multiple problem sizes (32..256), 5 timed runs each.
 
 module col_norm_mod
@@ -38,12 +28,13 @@ module col_norm_mod
 contains
 
   ! ------------------------------------------------------------------ !
-  !  OMP ij-outer: all four phases run inside a single target teams    !
-  !  region using separate distribute parallel do constructs.          !
-  !  col_sum persists on device between phases via target enter/exit.  !
+  !  OMP separate loops: each phase is its own !$omp target loop       !
+  !  kernel with its own map clauses.  Phase 2 launches nz-1 kernels  !
+  !  (serial k, parallel ij).  col_sum persists on device via         !
+  !  target enter/exit data.                                           !
   ! ------------------------------------------------------------------ !
-  subroutine run_colnorm_omp(ni, nj, nz, nteams, wt, mask, wt_out)
-    integer,  intent(in)  :: ni, nj, nz, nteams
+  subroutine run_colnorm_omp(ni, nj, nz, wt, mask, wt_out)
+    integer,  intent(in)  :: ni, nj, nz
     real(dp), intent(in)  :: wt(ni, nj, nz)
     real(dp), intent(in)  :: mask(ni, nj)
     real(dp), intent(out) :: wt_out(ni, nj, nz)
@@ -52,150 +43,34 @@ contains
 
     !$omp target enter data map(alloc: col_sum)
 
-    !$omp target teams num_teams(nteams) &
-    !$omp&   map(to: wt, mask) map(from: wt_out)
-
     ! Phase 1: init column sums from k=1
-    !$omp distribute parallel do collapse(2) private(I, j)
+    !$omp target loop collapse(2) map(to: wt)
     do j = 1, nj ; do I = 1, ni
       col_sum(I,j) = wt(I,j,1)
     enddo ; enddo
 
-    ! Phase 2: accumulate layers k=2..nz (serial k, distributed ij per layer)
+    ! Phase 2: accumulate layers k=2..nz (serial k, parallel ij per layer)
     do k = 2, nz
-      !$omp distribute parallel do collapse(2) private(I, j)
+      !$omp target loop collapse(2) map(to: wt)
       do j = 1, nj ; do I = 1, ni
         col_sum(I,j) = col_sum(I,j) + wt(I,j,k)
       enddo ; enddo
     enddo
 
-    ! Phase 3: conditional invert — mask guards against zero/masked columns
-    !$omp distribute parallel do collapse(2) private(I, j)
+    ! Phase 3: conditional invert
+    !$omp target loop collapse(2) map(to: mask)
     do j = 1, nj ; do I = 1, ni
       if (abs(col_sum(I,j)) > 0.0_dp) col_sum(I,j) = mask(I,j) / col_sum(I,j)
     enddo ; enddo
 
-    ! Phase 4: broadcast 2-D result back to the full 3-D weight array
-    !$omp distribute parallel do collapse(3) private(I, j, k)
+    ! Phase 4: broadcast 2-D result back to 3-D
+    !$omp target loop collapse(3) map(to: wt) map(from: wt_out)
     do k = 1, nz ; do j = 1, nj ; do I = 1, ni
       wt_out(I,j,k) = wt(I,j,k) * col_sum(I,j)
     enddo ; enddo ; enddo
 
-    !$omp end target teams
-
     !$omp target exit data map(release: col_sum)
   end subroutine run_colnorm_omp
-
-  ! ------------------------------------------------------------------ !
-  !  OMP ji-outer: j distributed (one team per j-row), i parallel     !
-  !  within each team, k serial.  All four phases run within the same  !
-  !  team in order, separated by implicit parallel-do barriers.        !
-  ! ------------------------------------------------------------------ !
-  subroutine run_colnorm_omp_ji(ni, nj, nz, wt, mask, wt_out)
-    integer,  intent(in)  :: ni, nj, nz
-    real(dp), intent(in)  :: wt(ni, nj, nz)
-    real(dp), intent(in)  :: mask(ni, nj)
-    real(dp), intent(out) :: wt_out(ni, nj, nz)
-    real(dp) :: col_sum(ni, nj)
-    integer  :: I, j, k
-
-    !$omp target enter data map(alloc: col_sum)
-
-    !$omp target teams loop num_teams(nj) &
-    !$omp&   map(to: wt, mask) map(from: wt_out)
-    do j = 1, nj
-
-      ! Phase 1: init from k=1
-      !$omp loop bind(parallel) private(I)
-      do I = 1, ni ; col_sum(I,j) = wt(I,j,1) ; enddo
-
-      ! Phase 2: accumulate k=2..nz
-      do k = 2, nz
-        !$omp loop bind(parallel) private(I)
-        do I = 1, ni ; col_sum(I,j) = col_sum(I,j) + wt(I,j,k) ; enddo
-      enddo
-
-      ! Phase 3: conditional invert
-      !$omp loop bind(parallel) private(I)
-      do I = 1, ni
-        if (abs(col_sum(I,j)) > 0.0_dp) col_sum(I,j) = mask(I,j) / col_sum(I,j)
-      enddo
-
-      ! Phase 4: apply to 3-D
-      do k = 1, nz
-        !$omp loop bind(parallel) private(I)
-        do I = 1, ni ; wt_out(I,j,k) = wt(I,j,k) * col_sum(I,j) ; enddo
-      enddo
-
-    enddo
-
-    !$omp target exit data map(release: col_sum)
-  end subroutine run_colnorm_omp_ji
-
-  ! ------------------------------------------------------------------ !
-  !  do concurrent, separate phases: mirrors the OMP ij-outer          !
-  !  structure.  Phase 2 uses a serial k outer with do concurrent(j,i) !
-  !  inner.  Phase 3 uses the do concurrent filter-mask syntax.        !
-  ! ------------------------------------------------------------------ !
-  subroutine run_colnorm_dc(ni, nj, nz, wt, mask, wt_out)
-    integer,  intent(in)  :: ni, nj, nz
-    real(dp), intent(in)  :: wt(ni, nj, nz)
-    real(dp), intent(in)  :: mask(ni, nj)
-    real(dp), intent(out) :: wt_out(ni, nj, nz)
-    real(dp) :: col_sum(ni, nj)
-    integer  :: I, j, k
-
-    ! Phase 1
-    do concurrent (j = 1:nj, I = 1:ni)
-      col_sum(I,j) = wt(I,j,1)
-    enddo
-
-    ! Phase 2: serial k, concurrent ij per layer
-    do k = 2, nz
-      do concurrent (j = 1:nj, I = 1:ni)
-        col_sum(I,j) = col_sum(I,j) + wt(I,j,k)
-      enddo
-    enddo
-
-    ! Phase 3: conditional invert via do concurrent filter mask
-    do concurrent (j = 1:nj, I = 1:ni, abs(col_sum(I,j)) > 0.0_dp)
-      col_sum(I,j) = mask(I,j) / col_sum(I,j)
-    enddo
-
-    ! Phase 4
-    do concurrent (k = 1:nz, j = 1:nj, I = 1:ni)
-      wt_out(I,j,k) = wt(I,j,k) * col_sum(I,j)
-    enddo
-  end subroutine run_colnorm_dc
-
-  ! ------------------------------------------------------------------ !
-  !  do concurrent ji: phases 1-3 fused into a single concurrent(j,i) !
-  !  construct.  Each (j,i) thread runs serial k accumulation and      !
-  !  conditional invert independently.  Phase 4 is a separate fused   !
-  !  concurrent(k,j,i).                                               !
-  ! ------------------------------------------------------------------ !
-  subroutine run_colnorm_dc_ji(ni, nj, nz, wt, mask, wt_out)
-    integer,  intent(in)  :: ni, nj, nz
-    real(dp), intent(in)  :: wt(ni, nj, nz)
-    real(dp), intent(in)  :: mask(ni, nj)
-    real(dp), intent(out) :: wt_out(ni, nj, nz)
-    real(dp) :: col_sum(ni, nj)
-    integer  :: I, j, k
-
-    ! Phases 1-3 fused: each (j,i) independently accumulates over k then inverts
-    do concurrent (j = 1:nj, I = 1:ni)
-      col_sum(I,j) = wt(I,j,1)
-      do k = 2, nz
-        col_sum(I,j) = col_sum(I,j) + wt(I,j,k)
-      enddo
-      if (abs(col_sum(I,j)) > 0.0_dp) col_sum(I,j) = mask(I,j) / col_sum(I,j)
-    enddo
-
-    ! Phase 4
-    do concurrent (k = 1:nz, j = 1:nj, I = 1:ni)
-      wt_out(I,j,k) = wt(I,j,k) * col_sum(I,j)
-    enddo
-  end subroutine run_colnorm_dc_ji
 
   ! ------------------------------------------------------------------ !
   !  CPU reference: plain do loops, identical logic, no directives.   !
@@ -231,34 +106,31 @@ program test_col_norm
   use omp_lib
   implicit none
 
-  integer,  parameter :: nz           = 20
+  integer,  parameter :: nz           = 100
   integer,  parameter :: n_sizes      = 5
   integer,  parameter :: all_sizes(n_sizes) = [32, 64, 128, 256, 512]
 
   real(dp), allocatable :: wt(:,:,:)
   real(dp), allocatable :: mask(:,:)
-  real(dp), allocatable :: wt_omp(:,:,:), wt_omp_ji(:,:,:)
-  real(dp), allocatable :: wt_dc(:,:,:),  wt_dc_ji(:,:,:)
+  real(dp), allocatable :: wt_omp(:,:,:)
   real(dp), allocatable :: wt_cpu(:,:,:)
 
-  integer  :: ni, nj, nteams, I, j, k, isize, irun
+  integer  :: ni, nj, I, j, k, isize, irun
   real(dp) :: t0, t1
   real(dp) :: times(n_runs)
-  logical  :: p1, p2, p3, p4, all_pass
+  logical  :: p1, all_pass
 
   do isize = 1, n_sizes
     ni = all_sizes(isize) ; nj = all_sizes(isize)
-    nteams = (ni * nj + 255) / 256
 
     write(*,*)
     write(*,'(A)') '========================================================'
-    write(*,'(A,I0,A,I0,A,I0,A,I0)') &
-      'Size: ni=', ni, '  nj=', nj, '  nz=', nz, '  nteams=', nteams
+    write(*,'(A,I0,A,I0,A,I0)') &
+      'Size: ni=', ni, '  nj=', nj, '  nz=', nz
     write(*,'(A)') '========================================================'
 
     allocate(wt(ni, nj, nz), mask(ni, nj))
-    allocate(wt_omp(ni, nj, nz), wt_omp_ji(ni, nj, nz))
-    allocate(wt_dc(ni, nj, nz),  wt_dc_ji(ni, nj, nz))
+    allocate(wt_omp(ni, nj, nz))
     allocate(wt_cpu(ni, nj, nz))
 
     ! wt is strictly positive (range [0.5, 1.5]) so column sums are always nonzero.
@@ -278,23 +150,11 @@ program test_col_norm
 
     call run_colnorm_cpu(ni, nj, nz, wt, mask, wt_cpu)
 
-    call run_colnorm_omp(ni, nj, nz, nteams, wt, mask, wt_omp)
+    call run_colnorm_omp(ni, nj, nz, wt, mask, wt_omp)
     !$omp taskwait
-    call compare_3d('omp    |cpu', wt_omp,    wt_cpu, p1)
+    call compare_3d('omp    |cpu', wt_omp, wt_cpu, p1)
 
-    call run_colnorm_omp_ji(ni, nj, nz, wt, mask, wt_omp_ji)
-    !$omp taskwait
-    call compare_3d('omp_ji |cpu', wt_omp_ji, wt_cpu, p2)
-
-    call run_colnorm_dc(ni, nj, nz, wt, mask, wt_dc)
-    !$omp taskwait
-    call compare_3d('dc     |cpu', wt_dc,     wt_cpu, p3)
-
-    call run_colnorm_dc_ji(ni, nj, nz, wt, mask, wt_dc_ji)
-    !$omp taskwait
-    call compare_3d('dc_ji  |cpu', wt_dc_ji,  wt_cpu, p4)
-
-    all_pass = p1 .and. p2 .and. p3 .and. p4
+    all_pass = p1
     if (all_pass) then
       write(*,*) '  All correct.'
     else
@@ -307,43 +167,12 @@ program test_col_norm
     write(*,*)
     write(*,*) '--- Timings ---'
 
-    !$omp target enter data map(to: wt, mask) &
-    !$omp&   map(alloc: wt_omp, wt_omp_ji, wt_dc, wt_dc_ji)
+    !$omp target enter data map(to: wt, mask) map(alloc: wt_omp)
 
-    write(*,*) 'OMP (ij teams, separate phases):'
+    write(*,*) 'OMP (separate target loop per phase):'
     do irun = 1, n_runs
       t0 = omp_get_wtime()
-      call run_colnorm_omp(ni, nj, nz, nteams, wt, mask, wt_omp)
-      !$omp taskwait
-      t1 = omp_get_wtime()
-      times(irun) = t1 - t0
-    enddo
-    call print_timing_stats(times)
-
-    write(*,*) 'OMP ji (j teams, parallel i, serial k per team):'
-    do irun = 1, n_runs
-      t0 = omp_get_wtime()
-      call run_colnorm_omp_ji(ni, nj, nz, wt, mask, wt_omp_ji)
-      !$omp taskwait
-      t1 = omp_get_wtime()
-      times(irun) = t1 - t0
-    enddo
-    call print_timing_stats(times)
-
-    write(*,*) 'do concurrent (separate phases, serial k outer in phase 2):'
-    do irun = 1, n_runs
-      t0 = omp_get_wtime()
-      call run_colnorm_dc(ni, nj, nz, wt, mask, wt_dc)
-      !$omp taskwait
-      t1 = omp_get_wtime()
-      times(irun) = t1 - t0
-    enddo
-    call print_timing_stats(times)
-
-    write(*,*) 'do concurrent ji (phases 1-3 fused, serial k within each (j,i)):'
-    do irun = 1, n_runs
-      t0 = omp_get_wtime()
-      call run_colnorm_dc_ji(ni, nj, nz, wt, mask, wt_dc_ji)
+      call run_colnorm_omp(ni, nj, nz, wt, mask, wt_omp)
       !$omp taskwait
       t1 = omp_get_wtime()
       times(irun) = t1 - t0
@@ -360,10 +189,9 @@ program test_col_norm
     enddo
     call print_timing_stats(times)
 
-    !$omp target exit data map(release: wt, mask, &
-    !$omp&   wt_omp, wt_omp_ji, wt_dc, wt_dc_ji)
+    !$omp target exit data map(release: wt, mask, wt_omp)
 
-    deallocate(wt, mask, wt_omp, wt_omp_ji, wt_dc, wt_dc_ji, wt_cpu)
+    deallocate(wt, mask, wt_omp, wt_cpu)
 
   enddo ! isize
 
