@@ -102,7 +102,6 @@ contains
     do j = 1, ny
       do i = 1, nx
         av_rem_v(i,j) = 0.0_dp
-      !$omp parallel do private(k)
         do k = 1, nz
           av_rem_v(i,j) = av_rem_v(i,j) + frhatv(i,j,k) * visc_rem_v(i,j,k)
         enddo
@@ -161,7 +160,7 @@ program test_av_rem
   use omp_lib
   implicit none
 
-  integer,  parameter :: nz           = 20
+  integer,  parameter :: nz           = 100
   integer,  parameter :: n_sizes      = 5
   integer,  parameter :: all_sizes(n_sizes) = [32, 64, 128, 256, 512]
 
