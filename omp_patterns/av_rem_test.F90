@@ -26,13 +26,7 @@
 ! Comparisons: each GPU/DC variant vs CPU.
 ! Timing: multiple problem sizes (32..256), 5 timed runs each.
 
-#ifndef WAVEFRONT
-#define WAVEFRONT 64
-#endif
-
-#ifndef DEFAULT_BLOCK_SIZE
-#define DEFAULT_BLOCK_SIZE 256
-#endif
+#include "omp_macros.inc"
 
 module av_rem_mod
   use test_utils_mod, only: dp
@@ -49,20 +43,20 @@ contains
     integer,  intent(in)  :: nx, ny, nz
     real(dp), intent(in)  :: frhatv(nx, ny, nz)
     real(dp), intent(in)  :: visc_rem_v(nx, ny, nz)
-    real(dp), intent(out) :: av_rem_v(0:nx+1, ny)
+    real(dp), intent(out) :: av_rem_v(nx, ny)
     integer :: i, j, k, nthreads
 
     nthreads = int((nx + WAVEFRONT-1)/WAVEFRONT) * WAVEFRONT
 
-    !$omp target teams distribute num_teams(ny) thread_limit(nthreads) &
+    !$omp target teams TEAMS_OUTER_LOOP num_teams(ny) thread_limit(nthreads) &
     !$omp&   map(to: frhatv, visc_rem_v) map(from: av_rem_v)
     do j = 1, ny
-      !$omp parallel do
+      !$omp PARALLEL_INNER_LOOP
       do i = 1, nx
         av_rem_v(i,j) = 0.0_dp
       enddo
       do k = 1, nz
-        !$omp parallel do
+        !$omp PARALLEL_INNER_LOOP
         do i = 1, nx
           av_rem_v(i,j) = av_rem_v(i,j) + frhatv(i,j,k) * visc_rem_v(i,j,k)
         enddo
@@ -80,11 +74,11 @@ contains
     integer,  intent(in)  :: nx, ny, nz
     real(dp), intent(in)  :: frhatv(nx, ny, nz)
     real(dp), intent(in)  :: visc_rem_v(nx, ny, nz)
-    real(dp), intent(out) :: av_rem_v(0:nx+1, ny)
+    real(dp), intent(out) :: av_rem_v(nx, ny)
     integer :: i, j, k
 
     do concurrent (j = 1:ny)
-      do concurrent (i = 0:nx+1)
+      do concurrent (i = 1:nx)
         av_rem_v(i,j) = 0.0_dp
       enddo
       do k = 1, nz
@@ -104,10 +98,10 @@ contains
     integer,  intent(in)  :: nx, ny, nz, nteams
     real(dp), intent(in)  :: frhatv(nx, ny, nz)
     real(dp), intent(in)  :: visc_rem_v(nx, ny, nz)
-    real(dp), intent(out) :: av_rem_v(0:nx+1, ny)
+    real(dp), intent(out) :: av_rem_v(nx, ny)
     integer :: i, j, k
 
-    !$omp target teams distribute parallel do collapse(2) num_teams(nteams) &
+    !$omp target teams COMBINED_LOOP collapse(2) num_teams(nteams) &
     !$omp&   map(to: frhatv, visc_rem_v) map(from: av_rem_v)
     do j = 1, ny
       do i = 1, nx
@@ -128,7 +122,7 @@ contains
     integer,  intent(in)  :: nx, ny, nz
     real(dp), intent(in)  :: frhatv(nx, ny, nz)
     real(dp), intent(in)  :: visc_rem_v(nx, ny, nz)
-    real(dp), intent(out) :: av_rem_v(0:nx+1, ny)
+    real(dp), intent(out) :: av_rem_v(nx, ny)
     integer :: i, j, k
 
     do concurrent (j = 1:ny, i = 1:nx)
@@ -146,11 +140,11 @@ contains
     integer,  intent(in)  :: nx, ny, nz
     real(dp), intent(in)  :: frhatv(nx, ny, nz)
     real(dp), intent(in)  :: visc_rem_v(nx, ny, nz)
-    real(dp), intent(out) :: av_rem_v(0:nx+1, ny)
+    real(dp), intent(out) :: av_rem_v(nx, ny)
     integer :: i, j, k
 
     do j = 1, ny
-      do i = 0, nx+1
+      do i = 1, nx
         av_rem_v(i,j) = 0.0_dp
       enddo
       do k = 1, nz
@@ -189,7 +183,7 @@ program test_av_rem
 
   do isize = 1, n_sizes
     nx = all_sizes(isize) ; ny = all_sizes(isize)
-    nteams = (nx * ny + DEFAULT_BLOCK_SIZE-1) / DEFAULT_BLOCK_SIZE
+    nteams = (nx * ny + TEAM_SIZE-1) / TEAM_SIZE
 
     write(*,*)
     write(*,'(A)') '========================================================'
@@ -198,9 +192,9 @@ program test_av_rem
     write(*,'(A)') '========================================================'
 
     allocate(frhatv(nx, ny, nz), visc_rem_v(nx, ny, nz))
-    allocate(av_rem_omp(0:nx+1, ny), av_rem_omp_ji(0:nx+1, ny))
-    allocate(av_rem_dc(0:nx+1, ny),  av_rem_dc_ji(0:nx+1, ny))
-    allocate(av_rem_cpu(0:nx+1, ny))
+    allocate(av_rem_omp(nx, ny), av_rem_omp_ji(nx, ny))
+    allocate(av_rem_dc(nx, ny),  av_rem_dc_ji(nx, ny))
+    allocate(av_rem_cpu(nx, ny))
 
     do k = 1, nz ; do j = 1, ny ; do i = 1, nx
       frhatv(i,j,k)     = 0.5_dp + 0.5_dp * sin(pi * real(i + j + k,     dp) / 20.0_dp)

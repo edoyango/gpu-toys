@@ -21,6 +21,8 @@
 ! Comparisons: GPU variant vs CPU.
 ! Timing: multiple problem sizes (32..256), 5 timed runs each.
 
+#include "omp_macros.inc"
+
 module col_norm_mod
   use test_utils_mod, only: dp
   implicit none
@@ -44,27 +46,27 @@ contains
     !$omp target enter data map(alloc: col_sum)
 
     ! Phase 1: init column sums from k=1
-    !$omp target loop collapse(2) map(to: wt)
+    !$omp target teams COMBINED_LOOP collapse(2) map(to: wt)
     do j = 1, nj ; do I = 1, ni
       col_sum(I,j) = wt(I,j,1)
     enddo ; enddo
 
     ! Phase 2: accumulate layers k=2..nz (serial k, parallel ij per layer)
     do k = 2, nz
-      !$omp target loop collapse(2) map(to: wt)
+      !$omp target teams COMBINED_LOOP collapse(2) map(to: wt)
       do j = 1, nj ; do I = 1, ni
         col_sum(I,j) = col_sum(I,j) + wt(I,j,k)
       enddo ; enddo
     enddo
 
     ! Phase 3: conditional invert
-    !$omp target loop collapse(2) map(to: mask)
+    !$omp target teams COMBINED_LOOP collapse(2) map(to: mask)
     do j = 1, nj ; do I = 1, ni
       if (abs(col_sum(I,j)) > 0.0_dp) col_sum(I,j) = mask(I,j) / col_sum(I,j)
     enddo ; enddo
 
     ! Phase 4: broadcast 2-D result back to 3-D
-    !$omp target loop collapse(3) map(to: wt) map(from: wt_out)
+    !$omp target teams COMBINED_LOOP collapse(3) map(to: wt) map(from: wt_out)
     do k = 1, nz ; do j = 1, nj ; do I = 1, ni
       wt_out(I,j,k) = wt(I,j,k) * col_sum(I,j)
     enddo ; enddo ; enddo

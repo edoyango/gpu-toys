@@ -9,19 +9,7 @@
 !   single !$omp target teams enclosing a sequential Newton/bisection
 !   do-itt loop with multiple !$omp distribute parallel do nests inside.
 
-#ifdef LOOP
-#define TEAMS_OUTER_LOOP loop
-#define PARALLEL_INNER_LOOP loop bind(parallel)
-#define COMBINED_LOOP loop bind(teams)
-#else
-#define TEAMS_OUTER_LOOP distribute
-#define PARALLEL_INNER_LOOP parallel do
-#define COMBINED_LOOP TEAMS_OUTER_LOOP PARALLEL_INNER_LOOP
-#endif
-
-#ifndef TEAM_SIZE
-#define TEAM_SIZE 256
-#endif
+#include "omp_macros.inc"
 
 module repro_mod
   use test_utils_mod, only: dp

@@ -1,6 +1,0 @@
-TEST_SRC        = repro_tests.F90
-EXE_GPU         = repro_tests_gpu
-EXE_CPU         = repro_tests_cpu
-EXTRA_GPU_FLAGS = -DLOOP
-
-include Makefile.common

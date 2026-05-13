@@ -1,5 +1,0 @@
-TEST_SRC = col_norm_test.F90
-EXE_GPU  = col_norm_gpu
-EXE_CPU  = col_norm_cpu
-
-include Makefile.common

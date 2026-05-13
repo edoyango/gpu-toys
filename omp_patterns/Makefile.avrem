@@ -1,7 +1,0 @@
-TEST_SRC        = av_rem_test.F90
-EXE_GPU         = av_rem_gpu
-EXE_CPU         = av_rem_cpu
-GPU_OPT         = -O3
-EXTRA_GPU_FLAGS = $(DC_FLAG)
-
-include Makefile.common
