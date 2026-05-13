@@ -1,5 +1,5 @@
 FC     ?= amdflang
-FFLAGS ?= -fopenmp -offload-arch=native -O3 -ffp-contract=off
+FFLAGS ?= -fopenmp --offload-arch=native -O3 -ffp-contract=off  -fdo-concurrent-to-openmp=device
 
 UTILS = test_utils.F90
 

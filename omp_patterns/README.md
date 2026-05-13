@@ -5,18 +5,18 @@ The reason for this comparison is that we've ported MOM6 code using OpenMP + do 
 NVIDIA only, and I would like to get a sense of how well our code would translate to AMD. Hence,
 the tests are heavily reduced versions of some common loop patterns used so far.
 
-Hardware:
+Setups:
 
 * AMD: MI250x single GCD using ROCm 7.2.3.
   * This is run with singularity - ROCm 6.4.1 and kernel version 6.4 on host.
-  * Code compiled with `amdflang -fopenmp --offload-arch=gfx90a -Mnofma -O3`
+  * Code compiled with `amdflang -fopenmp --offload-arch=gfx90a -Mnofma -O3 -ffp-contract=off -fdo-concurrent-to-openmp=device`
   * 28 TFLOPS, 1.6TB/s
 * NVIDIA: V100 SXM using NVHPC 25.9.
-  * Code compiled with `nvfortran -mp=gpu -gpu=mem:separate -Mnofma -Mnovect -O4 -Minline=flux_elem`
+  * Code compiled with `nvfortran -mp=gpu -gpu=mem:separate -Mnofma -Mnovect -O4 -Minline=flux_elem -stdpar=gpu`
   * 7.5 TFLOPS, 0.9TB/s
 
 The `-ffp-contract=off` and `-Mnofma -Mnovect` flags are to ensure that results are bitwise
-identical with CPU for NVIDIA. Interestingly, excluding these flags *slows down* the NVIDIA GPU code.
+identical with CPU. Interestingly, excluding these flags *slows down* the NVIDIA GPU code.
 `-Minline=flux_elem` is included in the NVIDIA compilation as `amdflang` automatically inlines at `-O3`
 (can be checked with `-Rpass=inline`). Furthermore, there is a compiler bug affecting some of these
 tests which require inlining functions to get correct results.
@@ -29,8 +29,7 @@ All timings show best of 5 runs using 512x512x100 grid.
 Note that wherever the `loop` construct is used in the below examples, the AMD code actually uses
 the older `teams distribute parallel do`. On the otherhand, NVIDIA uses `loop`. There are two
 reasons for this difference:
-1. The version of ROCm used here gives the wrong answers when using `loop`
-  * When tested on my laptop with a newer ROCm, `loop` does work correctly.
+1. with `amdflang`, `loop` didn't always give the right answers or they were slow.
 2. NVIDIA performs significantly faster with `loop` than the older construct.
 
 ## Loop pattern 1a: Outer target teams with parallel inner ij loops + serial loops
