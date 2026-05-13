@@ -7,8 +7,8 @@ the tests are heavily reduced versions of some common loop patterns used so far.
 
 Hardware:
 
-* AMD: MI250x single GCD using ROCm 6.4.1.
-  * Latest ROCm is 7.2.3, but the system used doesn't have newer ROCm.
+* AMD: MI250x single GCD using ROCm 7.2.3.
+  * This is run with singularity - ROCm 6.4.1 and kernel version 6.4 on host.
   * Code compiled with `amdflang -fopenmp --offload-arch=gfx90a -Mnofma -O3`
   * 28 TFLOPS, 1.6TB/s
 * NVIDIA: V100 SXM using NVHPC 25.9.
@@ -62,10 +62,15 @@ do itt=1,20
 
 |                   | 32x32x100 | 64x64x100 | 128x128x100 | 256x256x100 | 512x512x100 |
 | :---              | ---:      | ---:      | ---:        | ---:        | ---:        |
-| MI250x ROCm 6.4.1 | 2.208     | 2.453     | 2.507       | 4.391       | 15.831      |
+| MI250x ROCm 7.2.3 | 1.948     | 2.154     | 2.173       | 3.489       | 13.620      |
 | V100 NVHPC 25.9   | 1.168     | 1.454     | 1.658       | 4.089       | 12.060      |
 
 Despite being older and weaker, the V100 beats the MI250x in all problem sizes. 
+
+In this scenario, I couldn't get the `loop` construct working on the inner loops in the AMD setup.
+
+Worth noting that when using ROCm 6.4.1, the AMD setup was about 10-15% slower than the above reported
+times.
 
 ## Loop pattern 1b: Outer ij loop with inner serial loops
 
@@ -87,11 +92,13 @@ Which is clearly simpler.
 
 |                   | 32x32x100 | 64x64x100 | 128x128x100 | 256x256x100 | 512x512x100 |
 | :---              | ---:      | ---:      | ---:        | ---:        | ---:        |
-| MI250x ROCm 6.4.1 | 0.548     | 0.697     | 0.722       | 1.496       | 6.671       |
+| MI250x ROCm 7.2.3 | 0.548     | 0.697     | 0.722       | 1.496       | 6.671       |
 | V100 NVHPC 25.9   | 0.374     | 0.667     | 0.859       | 2.234       | 8.881       |
 
 And in both cases, the compiler does a better job of optimising. Furthermore, the AMD setup is now
 doing better than the tested NVIDIA setup by a meaningful margin at larger problem sizes.
+
+These timings didn't change much with ROCm version used.
 
 ## Loop pattern 2: k-reduction
 
@@ -108,13 +115,39 @@ do j=...
     do i=...
 ```
 
-|                   | 32x32x100 | 64x64x100 | 128x128x100 | 256x256x100 | 512x512x100 |
-| :---              | ---:      | ---:      | ---:        | ---:        | ---:        |
-| MI250x ROCm 6.4.1 | 0.956     | 1.823     | 3.713       | 7.440       | 16.536      |
-| V100 NVHPC 25.9   | 0.038     | 0.058     | 0.071       | 0.169       | 0.681       |
+|                                    | 32x32x100 | 64x64x100 | 128x128x100 | 256x256x100 | 512x512x100 |
+| :---                               | ---:      | ---:      | ---:        | ---:        | ---:        |
+| MI250x ROCm 6.4.1                  | 0.956     | 1.823     | 3.713       | 7.440       | 16.536      |
+| MI250x ROCm 7.2.3                  | 0.109     | 0.111     | 0.127       | 0.193       | 1.217       |
+| MI250x ROCm 7.2.3 with thread spec | 0.103     | 0.106     | 0.123       | 0.300       | 0.803       |
+| V100 NVHPC 25.9                    | 0.038     | 0.058     | 0.071       | 0.169       | 0.681       |
+| V100 NVHPC 25.9 with thread spec   | 0.038     | 0.055     | 0.069       | 0.142       | 0.562       |
 
-The AMD setup is clearly struggling here, being at least an order of magnitude slower than the
-NVIDIA setup.
+Notably, **when using ROCm 6.4.1, these timings were an order magnitude worse then 7.2.3**.
+Which highlights how the AMD compilers are improving. 
+
+Even with the newer ROCm, the AMD setup is slower than NVIDIA by approx 2x - except for the
+256x256x100 test. This might be because the block size used in AMD is 256, which matches up 
+nicely with that problem size.
+
+I did notice that the 512x512x100 was reduced to ~0.8ms if number of threads was set to match
+the `nx` dimension. In contrast, the 256x256x100 time doubled, and the smaller sizes
+improved a negligable amount. Now, given that problem sizes are unlikely to line up with
+the default block size (256), it's probably beneficial to set threads explicitly when using
+this jki loop pattern.
+
+When using `thread_limit` in the NVIDIA setup, which uses the `loop` clause, the compiler
+feedback indicated i-loops after the first one were being serialised:
+
+```
+# without thread_limit
+
+# with thread_limit
+
+```
+
+But as the table shows, there was nevertheless a speedup. Perhaps a bug in the compiler info?
+
 
 If turned into a jik loop:
 
@@ -130,6 +163,10 @@ then we get:
 |                   | 32x32x100 | 64x64x100 | 128x128x100 | 256x256x100 | 512x512x100 |
 | :---              | ---:      | ---:      | ---:        | ---:        | ---:        |
 | MI250x ROCm 6.4.1 | 0.057     | 0.057     | 0.059       | 0.108       | 0.382       |
+| MI250x ROCm 7.2.3 | 0.051     | 0.052     | 0.054       | 0.093       | 0.370       |
 | V100 NVHPC 25.9   | 0.014     | 0.016     | 0.041       | 0.140       | 0.541       |
 
-The timings look like the difference between loop pattern 1a and 1b. 
+The timings look like the difference between loop pattern 1a and 1b. There was a small
+improvement when using the newer ROCm.
+
+
