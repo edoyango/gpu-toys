@@ -119,7 +119,7 @@ do j=...
 | :---                               | ---:      | ---:      | ---:        | ---:        | ---:        |
 | MI250x ROCm 6.4.1                  | 0.956     | 1.823     | 3.713       | 7.440       | 16.536      |
 | MI250x ROCm 7.2.3                  | 0.109     | 0.111     | 0.127       | 0.193       | 1.217       |
-| MI250x ROCm 7.2.3 with thread spec | 0.103     | 0.106     | 0.123       | 0.300       | 0.803       |
+| MI250x ROCm 7.2.3 with thread spec | 0.103     | 0.106     | 0.123       | 0.300       | 0.759       |
 | V100 NVHPC 25.9                    | 0.038     | 0.058     | 0.071       | 0.169       | 0.681       |
 | V100 NVHPC 25.9 with thread spec   | 0.038     | 0.055     | 0.069       | 0.142       | 0.562       |
 
@@ -163,10 +163,20 @@ then we get:
 |                   | 32x32x100 | 64x64x100 | 128x128x100 | 256x256x100 | 512x512x100 |
 | :---              | ---:      | ---:      | ---:        | ---:        | ---:        |
 | MI250x ROCm 6.4.1 | 0.057     | 0.057     | 0.059       | 0.108       | 0.382       |
-| MI250x ROCm 7.2.3 | 0.051     | 0.052     | 0.054       | 0.093       | 0.370       |
+| MI250x ROCm 7.2.3 | 0.051     | 0.052     | 0.054       | 0.093       | 0.349       |
 | V100 NVHPC 25.9   | 0.014     | 0.016     | 0.041       | 0.140       | 0.541       |
 
 The timings look like the difference between loop pattern 1a and 1b. There was a small
 improvement when using the newer ROCm.
 
+### Do concurrent
 
+I also tested do concurrent for this loop. It's worth noting that ROCm 6.4.1 doesn't
+support ROCm, but ROCm 7+ does.
+
+For the jki loop:
+
+|                   | 32x32x100 | 64x64x100 | 128x128x100 | 256x256x100 | 512x512x100 |
+| :---              | ---:      | ---:      | ---:        | ---:        | ---:        |
+| MI250x ROCm 7.2.3 | 1.402     | 2.644     | 5.294       | 10.902      | 24.549      |
+| V100 NVHPC 25.9   | 0.014     | 0.016     | 0.041       | 0.140       | 0.541       |
