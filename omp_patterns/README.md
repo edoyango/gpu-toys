@@ -8,7 +8,8 @@ the tests are heavily reduced versions of some common loop patterns used so far.
 Setups:
 
 * AMD: MI250x single GCD using ROCm 7.2.3.
-  * This is run with singularity - ROCm 6.4.1 and kernel version 6.4 on host.
+  * Run inside Singularity with ROCm 7.2.3 in the container.
+  * Host environment: ROCm 6.4.1 module available, Linux kernel 6.4.
   * Code compiled with `amdflang -fopenmp --offload-arch=gfx90a -Mnofma -O3 -ffp-contract=off -fdo-concurrent-to-openmp=device`
   * 28 TFLOPS, 1.6TB/s
 * NVIDIA: V100 SXM using NVHPC 25.9.
@@ -24,12 +25,25 @@ tests which require inlining functions to get correct results.
 It's important to note that MI250x is a few years newer than the V100, and a more appropriate
 comparison would be with the A100s. But the latter were harder to get a hold of at the time.
 
-All timings show best of 5 runs using 512x512x100 grid.
+All table entries are timings in milliseconds, reported as the best of 5 runs. The tables show
+all tested grid sizes; the largest is 512x512x100. The corresponding source files are:
+pattern 1 is `repro_tests.F90`, pattern 2 is `av_rem_test.F90`, and pattern 3 is
+`col_norm_test.F90`.
+
+Rows labelled "with thread spec" explicitly set the team/thread geometry. In these tests that
+means using the target-specific constants in `omp_macros.inc`: `TEAM_SIZE=256` and
+`WAVEFRONT=64` on AMD, and `TEAM_SIZE=128` and `WAVEFRONT=32` on NVIDIA. The jki version
+uses `thread_limit(round_up(nx, WAVEFRONT))`; fused ij versions use
+`num_teams(ceil(nx * ny / TEAM_SIZE))`. Here `round_up(nx, WAVEFRONT)` means the next
+multiple of `WAVEFRONT` greater than or equal to `nx`.
 
 Note that wherever the `loop` construct is used in the below examples, the AMD code actually uses
-the older `teams distribute parallel do`. On the otherhand, NVIDIA uses `loop`. There are two
+the older `teams distribute parallel do`. On the other hand, NVIDIA uses `loop`. This is controlled
+by `omp_macros.inc`: defining `LOOP` maps the macros to `loop`, while leaving it undefined maps them
+to `teams distribute parallel do`. There are two
 reasons for this difference:
-1. with `amdflang`, `loop` didn't always give the right answers or they were slow.
+
+1. With `amdflang`, `loop` didn't always give the right answers or they were slow.
 2. NVIDIA performs significantly faster with `loop` than the older construct.
 
 ## Loop pattern 1a: Outer target teams with parallel inner ij loops + serial loops
@@ -38,7 +52,7 @@ This is probably the most complex loop pattern used so far. The `target teams` r
 and then an initialisation ij loop is run. Following is a newton-raphson iterative loop that ought
 to be serialised for every thread. Inside the newton-raphson loop is more parallel ij loops, with
 one of them being inside a serialised k loop. The k loop needs to be serialised because there are
-sum reductions and bitwise reprodicubility is a goal.
+sum reductions and bitwise reproducibility is a goal.
 
 The general code looks like:
 
@@ -64,7 +78,8 @@ do itt=1,20
 | MI250x ROCm 7.2.3 | 1.948     | 2.154     | 2.173       | 3.489       | 13.620      |
 | V100 NVHPC 25.9   | 1.168     | 1.454     | 1.658       | 4.089       | 12.060      |
 
-Despite being older and weaker, the V100 beats the MI250x in all problem sizes. 
+Despite being older and weaker, the V100 beats the MI250x in most problem sizes; the MI250x is
+faster for the 256x256x100 case.
 
 In this scenario, I couldn't get the `loop` construct working on the inner loops in the AMD setup.
 
@@ -74,7 +89,7 @@ times.
 ## Loop pattern 1b: Outer ij loop with inner serial loops
 
 The function of this version of the code is the same as above, except structured in a more GPU-friendly
-way. Instead of the ij loops being insde, the ij loop is outside with inner loops only being the serial
+way. Instead of the ij loops being inside, the ij loop is outside with inner loops only being the serial
 loops. This is beneficial because it is much clearer to the compiler that each GPU thread works
 independently of the others, whereas in version 1a, the compiler had to infer. 
 
@@ -101,7 +116,7 @@ These timings didn't change much with ROCm version used.
 
 ## Loop pattern 2: k-reduction
 
-This loop pattern is related to, but simpler than the first loop pattern. This simple reduces a 3d
+This loop pattern is related to, but simpler than the first loop pattern. This simply reduces a 3d
 array by the 3rd index i.e. ijk -> ij. Importantly, because bitwise reproducibility is an aim, the
 reduction of the 3rd index must be serialised. In the ported MOM6 code, this is a jki loop to
 preserve CPU performance.
@@ -122,16 +137,16 @@ do j=...
 | V100 NVHPC 25.9                    | 0.038     | 0.058     | 0.071       | 0.169       | 0.681       |
 | V100 NVHPC 25.9 with thread spec   | 0.038     | 0.055     | 0.069       | 0.142       | 0.562       |
 
-Notably, **when using ROCm 6.4.1, these timings were an order magnitude worse then 7.2.3**.
-Which highlights how the AMD compilers are improving. 
+Notably, **when using ROCm 6.4.1, these timings were an order of magnitude worse than 7.2.3**,
+which highlights how the AMD compilers are improving. 
 
 Even with the newer ROCm, the AMD setup is slower than NVIDIA by approx 2x - except for the
 256x256x100 test. This might be because the block size used in AMD is 256, which matches up 
 nicely with that problem size.
 
-I did notice that the 512x512x100 was reduced to ~0.8ms if number of threads was set to match
+I did notice that the 512x512x100 was reduced to ~0.8ms if the number of threads was set to match
 the `nx` dimension. In contrast, the 256x256x100 time doubled, and the smaller sizes
-improved a negligable amount. Now, given that problem sizes are unlikely to line up with
+improved a negligible amount. Now, given that problem sizes are unlikely to line up with
 the default block size (256), it's probably beneficial to set threads explicitly when using
 this jki loop pattern.
 
@@ -182,7 +197,7 @@ improvement when using the newer ROCm.
 ### Do concurrent
 
 I also tested do concurrent for this loop. It's worth noting that ROCm 6.4.1 doesn't
-support ROCm, but ROCm 7+ does.
+support `do concurrent` offload, but ROCm 7+ does.
 
 For the jki loop:
 
@@ -193,7 +208,7 @@ For the jki loop:
 
 Which is clearly awful on the AMD setup. By comparison, the NVIDIA setup is close to
 the OpenMP times. When inspecting the kernel launches on the AMD setup with the
-environment varialbe `LIBOMPTARGET_KERNEL_TRACE=1`, the output shows that the kernel is
+environment variable `LIBOMPTARGET_KERNEL_TRACE=1`, the output shows that the kernel is
 being launched with 16 blocks, each with 32 threads for all the problem sizes, when
 we would hope for `nj` blocks and 256 threads.
 
@@ -262,14 +277,14 @@ overhead for many small kernels.
 * `amdflang` benefits more strongly from explicitly setting number of teams and threads.
   This doesn't present as an obstacle, as it seems that it also benefits `nvfortran`.
 * The asynchronous default behaviour of OpenMP kernel launches in `amdflang` means
-  `!$omp taskwait` much be more diligently used, or the `OMPX_FORCE_SYNC_REGIONS`
-  environment variable must set.
+  `!$omp taskwait` must be more diligently used, or the `OMPX_FORCE_SYNC_REGIONS`
+  environment variable must be set.
 * Despite AMD OpenMP kernels being async, we can't expect them to be able to hide the
   kernel launch overhead for many small kernels.
 
 The main implications for MOM6 porting are:
-* latest ROCm should be used (Pawsey has 6.4.1 as the latest ROCm as a module)
+* The latest ROCm available should be used. At the time of testing, Pawsey's newest ROCm
+  module was 6.4.1.
 * Since NVIDIA does better with `do concurrent` and OpenMP `loop`, but AMD
   does better with `distribute parallel do`, there must be some conversion between
   them (maybe macros).
-
