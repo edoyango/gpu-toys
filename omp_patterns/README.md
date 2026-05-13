@@ -141,9 +141,20 @@ feedback indicated i-loops after the first one were being serialised:
 
 ```
 # without thread_limit
+         57, Generating "nvkernel_av_rem_mod_run_av_rem_omp__F1L57_2" GPU kernel
+             Generating NVIDIA GPU code
+           59, Loop parallelized across teams ! blockidx%x
+           61, Loop parallelized across threads(128) ! threadidx%x
+           64, Loop run sequentially 
+           66, Loop parallelized across threads(128) ! threadidx%x
 
 # with thread_limit
-
+         57, Generating "nvkernel_av_rem_mod_run_av_rem_omp__F1L57_2" GPU kernel
+             Generating NVIDIA GPU code
+           59, Loop parallelized across teams ! blockidx%x
+           61, Loop parallelized across threads(nthreads) ! threadidx%x
+           64, Loop run sequentially 
+           66, Loop run sequentially
 ```
 
 But as the table shows, there was nevertheless a speedup. Perhaps a bug in the compiler info?
@@ -178,5 +189,88 @@ For the jki loop:
 
 |                   | 32x32x100 | 64x64x100 | 128x128x100 | 256x256x100 | 512x512x100 |
 | :---              | ---:      | ---:      | ---:        | ---:        | ---:        |
-| MI250x ROCm 7.2.3 | 1.402     | 2.644     | 5.294       | 10.902      | 24.549      |
-| V100 NVHPC 25.9   | 0.014     | 0.016     | 0.041       | 0.140       | 0.541       |
+| MI250x ROCm 7.2.3 | 1.433     | 2.770     | 5.247       | 10.704      | 23.818      |
+| V100 NVHPC 25.9   | 0.019     | 0.021     | 0.045       | 0.140       | 0.525       |
+
+Which is clearly awful on the AMD setup. By comparison, the NVIDIA setup is close to
+the OpenMP times. When inspecting the kernel launches on the AMD setup with the
+environment varialbe `LIBOMPTARGET_KERNEL_TRACE=1`, the output shows that the kernel is
+being launched with 16 blocks, each with 32 threads for all the problem sizes, when
+we would hope for `nj` blocks and 256 threads.
+
+Interestingly, if we rerun the OpenMP jki loop version, except remove the inner
+`parallel do`s and have a plain `target teams distribute parallel do` wrap the outer
+j loop, we get the same times and launch configurations here. So we can infer that
+`do concurrent(j=...)` is equivalent to
+```
+!$omp target teams distribute parallel do
+do j=...
+```
+which is undesirable, as the compiler isn't parallelizing over i as well.
+
+If we run the jik do concurrent version:
+
+|                   | 32x32x100 | 64x64x100 | 128x128x100 | 256x256x100 | 512x512x100 |
+| :---              | ---:      | ---:      | ---:        | ---:        | ---:        |
+| MI250x ROCm 7.2.3 | 0.878     | 1.731     | 6.411       | 65.662      | 151.468     |
+| V100 NVHPC 25.9   | 0.016     | 0.018     | 0.042       | 0.139       | 0.524       |
+
+The NVIDIA timings are similar to previous, but the AMD setup seems to perform much
+worse. Inspecting the launch configuration, we see that we're getting 440 blocks and
+256 threads - which is what we'd hope, but this means the slowdown is for other reasons.
+
+## Loop pattern 3: repeated simple loops
+
+By simple loops, I mean 2d or 3d loops where each iteration is independent and all
+the iterations can be simply parallelised. This test is useful to examine if `amdflang`'s
+async OpenMP kernel launches proves useful or not.
+
+```fortran
+!$omp target loop ! or distribute parallel do
+do j=... ; do i=...
+
+do k=...
+  !$omp target loop
+  do j=... ; do i=...
+
+!$omp target loop
+do j=... ; do i=...
+
+!$omp target loop
+do k=... ; do j=... ; do i=...
+```
+
+The 2nd loop where the k is outside is intentional, to exaggerate the effect of kernel
+launch overheads.
+
+|                   | 32x32x100 | 64x64x100 | 128x128x100 | 256x256x100 | 512x512x100 |
+| :---              | ---:      | ---:      | ---:        | ---:        | ---:        |
+| MI250x ROCm 7.2.3 | 1.530     | 1.543     | 1.403       | 1.705       | 2.229       |
+| V100 NVHPC 25.9   | 0.863     | 0.849     | 0.883       | 1.066       | 1.931       |
+
+This appears to highlight that launch overheads are much higher on the AMD setup. And
+despite the asynchronous kernel launches, the async launches cannot hide the launch
+overhead for many small kernels.
+
+## Summary
+
+* `amdflang` supports basic OpenMP offload, and to get good results, the long form 
+  directives must be used and `loop` and `do concurrent` must be avoided. This is very 
+  unfortunate, as `nvfortran` prefers `loop` and `do concurrent` over the long form OpenMP 
+  directive.
+* `amdflang` doesn't handle nested parallelism as well as `nvfortran` does.
+  However, it seems that the most recent ROCm (7.2.3) can get ok performance.
+* `amdflang` benefits more strongly from explicitly setting number of teams and threads.
+  This doesn't present as an obstacle, as it seems that it also benefits `nvfortran`.
+* The asynchronous default behaviour of OpenMP kernel launches in `amdflang` means
+  `!$omp taskwait` much be more diligently used, or the `OMPX_FORCE_SYNC_REGIONS`
+  environment variable must set.
+* Despite AMD OpenMP kernels being async, we can't expect them to be able to hide the
+  kernel launch overhead for many small kernels.
+
+The main implications for MOM6 porting are:
+* latest ROCm should be used (Pawsey has 6.4.1 as the latest ROCm as a module)
+* Since NVIDIA does better with `do concurrent` and OpenMP `loop`, but AMD
+  does better with `distribute parallel do`, there must be some conversion between
+  them (maybe macros).
+
