@@ -11,7 +11,11 @@
 #ifdef __NVCOMPILER_OPENMP_GPU
 #define TEAM_SIZE 128
 #define WAVEFRONT 32
+#define TILE_I 32
+#define TILE_J 4
 #else
 #define TEAM_SIZE 256
 #define WAVEFRONT 64
+#define TILE_I 64
+#define TILE_J 4
 #endif
