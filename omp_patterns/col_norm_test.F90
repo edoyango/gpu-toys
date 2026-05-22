@@ -43,35 +43,35 @@ contains
     real(dp) :: col_sum(ni, nj)
     integer  :: I, j, k
 
-    !$omp target enter data map(alloc: col_sum)
+    GPU ENTER_DATA MAP_ALLOC(col_sum)
 
     ! Phase 1: init column sums from k=1
-    !$omp target teams COMBINED_LOOP collapse(2) map(to: wt)
+    GPU INIT_TEAMS COMBINED_LOOP collapse(2) MAP_TO(wt)
     do j = 1, nj ; do I = 1, ni
       col_sum(I,j) = wt(I,j,1)
     enddo ; enddo
 
     ! Phase 2: accumulate layers k=2..nz (serial k, parallel ij per layer)
     do k = 2, nz
-      !$omp target teams COMBINED_LOOP collapse(2) map(to: wt)
+      GPU INIT_TEAMS COMBINED_LOOP collapse(2) MAP_TO(wt)
       do j = 1, nj ; do I = 1, ni
         col_sum(I,j) = col_sum(I,j) + wt(I,j,k)
       enddo ; enddo
     enddo
 
     ! Phase 3: conditional invert
-    !$omp target teams COMBINED_LOOP collapse(2) map(to: mask)
+    GPU INIT_TEAMS COMBINED_LOOP collapse(2) MAP_TO(mask)
     do j = 1, nj ; do I = 1, ni
       if (abs(col_sum(I,j)) > 0.0_dp) col_sum(I,j) = mask(I,j) / col_sum(I,j)
     enddo ; enddo
 
     ! Phase 4: broadcast 2-D result back to 3-D
-    !$omp target teams COMBINED_LOOP collapse(3) map(to: wt) map(from: wt_out)
+    GPU INIT_TEAMS COMBINED_LOOP collapse(3) MAP_TO(wt) MAP_FROM(wt_out)
     do k = 1, nz ; do j = 1, nj ; do I = 1, ni
       wt_out(I,j,k) = wt(I,j,k) * col_sum(I,j)
     enddo ; enddo ; enddo
 
-    !$omp target exit data map(release: col_sum)
+    GPU EXIT_DATA MAP_DELETE(col_sum)
   end subroutine run_colnorm_omp
 
   ! ------------------------------------------------------------------ !
@@ -153,7 +153,7 @@ program test_col_norm
     call run_colnorm_cpu(ni, nj, nz, wt, mask, wt_cpu)
 
     call run_colnorm_omp(ni, nj, nz, wt, mask, wt_omp)
-    !$omp taskwait
+    GPU SYNC
     call compare_3d('omp    |cpu', wt_omp, wt_cpu, p1)
 
     all_pass = p1
@@ -169,13 +169,13 @@ program test_col_norm
     write(*,*)
     write(*,*) '--- Timings ---'
 
-    !$omp target enter data map(to: wt, mask) map(alloc: wt_omp)
+    GPU ENTER_DATA MAP_TO(wt, mask) MAP_ALLOC(wt_omp)
 
     write(*,*) 'OMP (separate target loop per phase):'
     do irun = 1, n_runs
       t0 = omp_get_wtime()
       call run_colnorm_omp(ni, nj, nz, wt, mask, wt_omp)
-      !$omp taskwait
+      GPU SYNC
       t1 = omp_get_wtime()
       times(irun) = t1 - t0
     enddo
@@ -185,13 +185,13 @@ program test_col_norm
     do irun = 1, n_runs
       t0 = omp_get_wtime()
       call run_colnorm_cpu(ni, nj, nz, wt, mask, wt_cpu)
-      !$omp taskwait
+      GPU SYNC
       t1 = omp_get_wtime()
       times(irun) = t1 - t0
     enddo
     call print_timing_stats(times)
 
-    !$omp target exit data map(release: wt, mask, wt_omp)
+    GPU EXIT_DATA MAP_DELETE(wt, mask, wt_omp)
 
     deallocate(wt, mask, wt_omp, wt_cpu)
 

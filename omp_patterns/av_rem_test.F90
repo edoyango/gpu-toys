@@ -48,15 +48,15 @@ contains
 
     nthreads = int((nx + WAVEFRONT-1)/WAVEFRONT) * WAVEFRONT
 
-    !$omp target teams TEAMS_OUTER_LOOP num_teams(ny) thread_limit(nthreads) &
-    !$omp&   map(to: frhatv, visc_rem_v) map(from: av_rem_v)
+    GPU INIT_TEAMS TEAMS_OUTER_LOOP NTEAMS(ny) THREAD_LIMIT(nthreads) &
+    GPU  MAP_TO(frhatv, visc_rem_v) MAP_FROM(av_rem_v)
     do j = 1, ny
-      !$omp PARALLEL_INNER_LOOP
+      GPU PARALLEL_INNER_LOOP
       do i = 1, nx
         av_rem_v(i,j) = 0.0_dp
       enddo
       do k = 1, nz
-        !$omp PARALLEL_INNER_LOOP
+        GPU PARALLEL_INNER_LOOP
         do i = 1, nx
           av_rem_v(i,j) = av_rem_v(i,j) + frhatv(i,j,k) * visc_rem_v(i,j,k)
         enddo
@@ -101,8 +101,8 @@ contains
     real(dp), intent(out) :: av_rem_v(nx, ny)
     integer :: i, j, k
 
-    !$omp target teams COMBINED_LOOP collapse(2) num_teams(nteams) &
-    !$omp&   map(to: frhatv, visc_rem_v) map(from: av_rem_v)
+    GPU INIT_TEAMS COMBINED_LOOP collapse(2) NTEAMS(nteams) &
+    GPU  MAP_TO(frhatv, visc_rem_v) MAP_FROM(av_rem_v)
     do j = 1, ny
       do i = 1, nx
         av_rem_v(i,j) = 0.0_dp
@@ -210,19 +210,19 @@ program test_av_rem
     call run_av_rem_cpu(nx, ny, nz, frhatv, visc_rem_v, av_rem_cpu)
 
     call run_av_rem_omp(nx, ny, nz, frhatv, visc_rem_v, av_rem_omp)
-    !$omp taskwait
+    GPU SYNC
     call compare_2d('omp    |cpu', av_rem_omp,    av_rem_cpu, p1)
 
     call run_av_rem_omp_ji(nx, ny, nz, nteams, frhatv, visc_rem_v, av_rem_omp_ji)
-    !$omp taskwait
+    GPU SYNC
     call compare_2d('omp_ji |cpu', av_rem_omp_ji, av_rem_cpu, p2)
 
     call run_av_rem_dc(nx, ny, nz, frhatv, visc_rem_v, av_rem_dc)
-    !$omp taskwait
+    GPU SYNC
     call compare_2d('dc     |cpu', av_rem_dc,     av_rem_cpu, p3)
 
     call run_av_rem_dc_ji(nx, ny, nz, frhatv, visc_rem_v, av_rem_dc_ji)
-    !$omp taskwait
+    GPU SYNC
     call compare_2d('dc_ji  |cpu', av_rem_dc_ji,  av_rem_cpu, p4)
 
     all_pass = p1 .and. p2 .and. p3 .and. p4
@@ -238,14 +238,14 @@ program test_av_rem
     write(*,*)
     write(*,*) '--- Timings ---'
 
-    !$omp target enter data map(to: frhatv, visc_rem_v) &
-    !$omp&   map(alloc: av_rem_omp, av_rem_omp_ji, av_rem_dc, av_rem_dc_ji)
+    GPU ENTER_DATA MAP_TO(frhatv, visc_rem_v) &
+    GPU  MAP_ALLOC(av_rem_omp, av_rem_omp_ji, av_rem_dc, av_rem_dc_ji)
 
     write(*,*) 'OMP (k serial in team, i parallel per k):'
     do irun = 1, n_runs
       t0 = omp_get_wtime()
       call run_av_rem_omp(nx, ny, nz, frhatv, visc_rem_v, av_rem_omp)
-      !$omp taskwait
+      GPU SYNC
       t1 = omp_get_wtime()
       times(irun) = t1 - t0
     enddo
@@ -255,7 +255,7 @@ program test_av_rem
     do irun = 1, n_runs
       t0 = omp_get_wtime()
       call run_av_rem_omp_ji(nx, ny, nz, nteams, frhatv, visc_rem_v, av_rem_omp_ji)
-      !$omp taskwait
+      GPU SYNC
       t1 = omp_get_wtime()
       times(irun) = t1 - t0
     enddo
@@ -265,7 +265,7 @@ program test_av_rem
     do irun = 1, n_runs
       t0 = omp_get_wtime()
       call run_av_rem_dc(nx, ny, nz, frhatv, visc_rem_v, av_rem_dc)
-      !$omp taskwait
+      GPU SYNC
       t1 = omp_get_wtime()
       times(irun) = t1 - t0
     enddo
@@ -275,7 +275,7 @@ program test_av_rem
     do irun = 1, n_runs
       t0 = omp_get_wtime()
       call run_av_rem_dc_ji(nx, ny, nz, frhatv, visc_rem_v, av_rem_dc_ji)
-      !$omp taskwait
+      GPU SYNC
       t1 = omp_get_wtime()
       times(irun) = t1 - t0
     enddo
@@ -285,14 +285,14 @@ program test_av_rem
     do irun = 1, n_runs
       t0 = omp_get_wtime()
       call run_av_rem_cpu(nx, ny, nz, frhatv, visc_rem_v, av_rem_cpu)
-      !$omp taskwait
+      GPU SYNC
       t1 = omp_get_wtime()
       times(irun) = t1 - t0
     enddo
     call print_timing_stats(times)
 
-    !$omp target exit data map(release: frhatv, visc_rem_v, &
-    !$omp&   av_rem_omp, av_rem_omp_ji, av_rem_dc, av_rem_dc_ji)
+    GPU EXIT_DATA MAP_DELETE(frhatv, visc_rem_v) &
+    GPU  MAP_DELETE(av_rem_omp, av_rem_omp_ji, av_rem_dc, av_rem_dc_ji)
 
     deallocate(frhatv, visc_rem_v)
     deallocate(av_rem_omp, av_rem_omp_ji, av_rem_dc, av_rem_dc_ji, av_rem_cpu)
