@@ -266,6 +266,62 @@ This appears to highlight that launch overheads are much higher on the AMD setup
 despite the asynchronous kernel launches, the async launches cannot hide the launch
 overhead for many small kernels.
 
+## NVHPC 26.3 directive-form resource usage and timings
+
+I also built `repro_tests.F90` three ways with NVHPC 26.3 to compare the generated
+kernel resource usage for the same macro-based source:
+
+```sh
+FC=/opt/nvidia/hpc_sdk/Linux_x86_64/26.3/compilers/bin/nvfortran
+CUOBJDUMP=/opt/nvidia/hpc_sdk/Linux_x86_64/26.3/cuda/13.1/bin/cuobjdump
+BASE="-mp=gpu -acc=gpu -gpu=mem:separate -O4 -stdpar=gpu -Minline=name:flux_elem -Mnovect -Mnofma"
+
+make -B repro_tests FC="$FC" FFLAGS="$BASE"        # OpenMP long form
+make -B repro_tests FC="$FC" FFLAGS="-DLOOP $BASE" # OpenMP loop
+make -B repro_tests FC="$FC" FFLAGS="-DACC $BASE"  # OpenACC
+```
+
+The results below were collected with `run_nvhpc_directive_comparison.sh` in
+`nvhpc_directive_results/20260522_125745` on an NVIDIA GeForce RTX 4060 Laptop GPU
+(`sm_89`, driver 580.142). All three binaries exited successfully.
+
+The compiler emitted cubins for several SM targets; the table below uses the `sm_89`
+entries from `cuobjdump -res-usage`. Entries are `REG/STACK/SHARED`. For the long-form
+OpenMP case, `cuobjdump` also reports outlined helper functions for the inner loops;
+the table uses the enclosing launched kernel entry.
+
+| Kernel / region | OpenMP long form | OpenMP loop | OpenACC |
+| :--- | ---: | ---: | ---: |
+| Continuity, line 72 | 148 / 920 / 0 | 46 / 0 / 0 | 49 / 0 / 0 |
+| Flux adjust init, line 162 | 40 / 0 / 0 | 40 / 0 / 0 | 38 / 0 / 0 |
+| Flux adjust separate loops, line 174 | 148 / 1008 / 0 | 78 / 0 / 24 | 88 / 0 / 24 |
+| Tiled flux adjust, line 311 | 148 / 1016 / 0 | 52 / 0 / 48 | 50 / 0 / 48 |
+| IJ-outer scalar-private, line 578 | 82 / 0 / 0 | 90 / 0 / 0 | 90 / 0 / 0 |
+| Fused IJ, line 693 | 148 / 1608 / 0 | 80 / 0 / 24 | 78 / 0 / 24 |
+| J-outer / I-parallel, line 821 | 148 / 1080 / 0 | 95 / 0 / 24 | 93 / 0 / 24 |
+
+The main pattern is that NVHPC's long-form OpenMP lowering is much heavier here:
+several kernels hit around 148 registers and also require about 1-1.6 KB of stack
+per thread. The `loop` and OpenACC forms are close to one another, use no stack in
+these kernels, and differ by only a few registers for most regions.
+
+For the largest case, 512x512x100, the best-of-5 timings were:
+
+| Kernel / region | OpenMP long form (ms) | OpenMP loop (ms) | OpenACC (ms) |
+| :--- | ---: | ---: | ---: |
+| Continuity | 16.804 | 6.239 | 6.246 |
+| Flux adjust separate loops | 121.425 | 32.596 | 30.156 |
+| IJ-outer scalar-private | 27.070 | 28.968 | 28.972 |
+| Fused IJ | 40.950 | 29.999 | 29.029 |
+| J-outer / I-parallel | 63.488 | 32.921 | 31.444 |
+| Tiled flux adjust | 107.388 | 33.014 | 31.305 |
+
+The timing story matches the resource-usage story. `loop` is 1.4-3.7x faster than
+long-form OpenMP for every 512x512x100 kernel except the scalar-private IJ-outer
+variant, where long-form OpenMP is about 7% faster. OpenACC is effectively tied with
+OpenMP `loop` for continuity and the IJ-outer variant, and is otherwise a few percent
+faster than `loop` in this run.
+
 ## Summary
 
 * `amdflang` supports basic OpenMP offload, and to get good results, the long form 
